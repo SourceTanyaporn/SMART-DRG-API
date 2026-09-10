@@ -7,6 +7,7 @@ from tempfile import NamedTemporaryFile
 from faster_whisper import WhisperModel
 
 from app.config import get_settings
+from app.ffmpeg_config import FFMPEG_BIN
 from app.postprocess import post_process_transcript
 from app.schemas import SegmentOut, TranscriptionOut
 from app.diarization_service import diarize_audio
@@ -82,10 +83,8 @@ def cut_audio_segment(
 
     output_file.close()
 
-    ffmpeg_path = r"C:\Users\syste\Documents\whisper\ffmpeg\bin\ffmpeg.exe"
-
     command = [
-        ffmpeg_path,
+        FFMPEG_BIN,
         "-y",
         "-ss",
         str(start),

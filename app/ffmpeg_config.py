@@ -15,3 +15,5 @@ if FFMPEG_DIR.exists():
             os.add_dll_directory(ffmpeg_dir_str)
         except Exception:
             pass
+
+FFMPEG_BIN = str(FFMPEG_EXE) if FFMPEG_EXE.exists() else "ffmpeg"
