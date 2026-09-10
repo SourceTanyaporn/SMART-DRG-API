@@ -1,0 +1,18 @@
+services:
+  whisper-api:
+    build:
+      context: .
+    container_name: whisper-api
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/app/app
+      - whisper-models:/root/.cache/huggingface
+      - whisper-uploads:/tmp/whisper-uploads
+    restart: unless-stopped
+
+volumes:
+  whisper-models:
+  whisper-uploads:

@@ -1,0 +1,13 @@
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.env
+models
+uploads
+*.mp3
+*.wav
+*.m4a
+*.mp4
+*.webm
