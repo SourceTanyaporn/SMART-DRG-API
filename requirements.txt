@@ -7,4 +7,4 @@ openai==1.99.9
 faster-whisper==1.2.0
 pydantic==2.11.7
 pyannote.audio>=3.1.1
-whisperx
+soundfile>=0.12.1

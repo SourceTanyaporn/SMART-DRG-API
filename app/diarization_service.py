@@ -4,11 +4,6 @@ from pathlib import Path
 import subprocess
 import shutil
 
-import torch
-import soundfile as sf
-
-from pyannote.audio import Pipeline
-
 from app.config import get_settings
 
 
@@ -54,6 +49,8 @@ def get_diarization_pipeline():
     if _pipeline is None:
 
         print("LOADING PYANNOTE PIPELINE...")
+        import torch
+        from pyannote.audio import Pipeline
 
         _pipeline = Pipeline.from_pretrained(
             "pyannote/speaker-diarization-3.1",
