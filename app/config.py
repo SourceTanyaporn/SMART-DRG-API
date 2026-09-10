@@ -35,6 +35,9 @@ class Settings:
     max_speakers: int | None = int(os.getenv("WHISPER_MAX_SPEAKERS")) if os.getenv("WHISPER_MAX_SPEAKERS") else None
     whisperx_batch_size: int = int(os.getenv("WHISPERX_BATCH_SIZE", "4"))
     huggingface_token: str | None = os.getenv("HUGGINGFACE_TOKEN") or None
+    groq_api_key: str | None = os.getenv("GROQ_API_KEY") or None
+    groq_whisper_model: str = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3")
+    transcription_provider: str = os.getenv("TRANSCRIPTION_PROVIDER", "groq" if os.getenv("GROQ_API_KEY") else "local")
 
 
 @lru_cache

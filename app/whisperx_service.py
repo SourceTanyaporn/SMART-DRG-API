@@ -10,7 +10,7 @@ from app.postprocess import post_process_transcript, apply_dictionary, post_proc
 from app.schemas import SegmentOut, TranscriptionOut
 
 from app.diarization_service import diarize_audio
-from app.whisper_service import get_model
+from app.whisper_service import get_model, transcribe_with_cloud_api
 from app.alignment_service import find_best_speaker, merge_same_speaker_segments, renumber_speakers_chronologically
 
 
@@ -142,38 +142,46 @@ def run_whisperx_pipeline(
         cpu_cores = os.cpu_count() or 4
         torch.set_num_threads(max(2, cpu_cores // 2))
 
-    model = get_model()
     resolved_beam = beam_size or settings.default_beam_size
     resolved_prompt = initial_prompt or settings.initial_prompt
     resolved_vad = vad_filter if vad_filter is not None else settings.default_vad_filter
 
     def do_whisper_transcribe():
-        print(f"Whisper transcribing: model={settings.model_size}, beam_size={resolved_beam}, vad={resolved_vad}, prompt={bool(resolved_prompt)}...")
-        segments_iter, info = model.transcribe(
-            str(audio_path),
-            language=language or "th",
-            task=task,
-            beam_size=resolved_beam,
-            vad_filter=resolved_vad,
-            vad_parameters=dict(threshold=0.35, min_silence_duration_ms=400, speech_pad_ms=250),
-            initial_prompt=resolved_prompt if resolved_prompt else None,
-            condition_on_previous_text=settings.condition_on_previous_text,
-            repetition_penalty=settings.repetition_penalty,
-            no_repeat_ngram_size=settings.no_repeat_ngram_size,
-            temperature=[0.0, 0.2],
-            word_timestamps=True,
-        )
-        segs = [s for s in segments_iter if s.text.strip()]
-        return segs, getattr(info, "duration", None), getattr(info, "language", language or "th")
-
-
-
+        if settings.groq_api_key or settings.transcription_provider in {"groq", "openai"}:
+            print(f"Cloud transcription starting (provider={settings.transcription_provider})...")
+            return transcribe_with_cloud_api(
+                audio_path,
+                language=language or "th",
+                initial_prompt=resolved_prompt,
+            )
+        else:
+            print(f"Local Whisper transcribing: model={settings.model_size}, beam_size={resolved_beam}, vad={resolved_vad}, prompt={bool(resolved_prompt)}...")
+            model = get_model()
+            segments_iter, info = model.transcribe(
+                str(audio_path),
+                language=language or "th",
+                task=task,
+                beam_size=resolved_beam,
+                vad_filter=resolved_vad,
+                vad_parameters=dict(threshold=0.35, min_silence_duration_ms=400, speech_pad_ms=250),
+                initial_prompt=resolved_prompt if resolved_prompt else None,
+                condition_on_previous_text=settings.condition_on_previous_text,
+                repetition_penalty=settings.repetition_penalty,
+                no_repeat_ngram_size=settings.no_repeat_ngram_size,
+                temperature=[0.0, 0.2],
+                word_timestamps=True,
+            )
+            segs = [s for s in segments_iter if s.text.strip()]
+            return segs, getattr(info, "duration", None), getattr(info, "language", language or "th")
 
     resolved_num_speakers = num_speakers if num_speakers is not None else settings.num_speakers
     resolved_min_speakers = min_speakers if min_speakers is not None else settings.min_speakers
     resolved_max_speakers = max_speakers if max_speakers is not None else settings.max_speakers
 
     def do_diarize():
+        if not settings.huggingface_token:
+            print("No HUGGINGFACE_TOKEN provided, skipping Pyannote diarization (using AI context role classification)...")
+            return []
         print(f"Pyannote diarization starting (num_speakers={resolved_num_speakers}, min={resolved_min_speakers}, max={resolved_max_speakers})...")
         return diarize_audio(
             audio_path,

@@ -4,8 +4,6 @@ from collections.abc import Callable
 import subprocess
 from tempfile import NamedTemporaryFile
 
-from faster_whisper import WhisperModel
-
 from app.config import get_settings
 from app.ffmpeg_config import FFMPEG_BIN
 from app.postprocess import post_process_transcript
@@ -13,8 +11,91 @@ from app.schemas import SegmentOut, TranscriptionOut
 from app.diarization_service import diarize_audio
 
 
+class SimpleSegment:
+    def __init__(self, id: int, start: float, end: float, text: str, words: list | None = None):
+        self.id = id
+        self.start = float(start)
+        self.end = float(end)
+        self.text = text
+        self.words = words or []
+
+
+def transcribe_with_cloud_api(
+    audio_path: Path,
+    *,
+    language: str | None = "th",
+    initial_prompt: str | None = None,
+) -> tuple[list[SimpleSegment], float | None, str]:
+    """
+    Ultra-fast, zero-RAM cloud transcription via Groq (whisper-large-v3) or OpenAI.
+    """
+    from openai import OpenAI
+    settings = get_settings()
+
+    use_groq = bool(settings.groq_api_key) or settings.transcription_provider == "groq"
+    if use_groq and settings.groq_api_key:
+        print(f"Using Groq Whisper API (model={settings.groq_whisper_model})...")
+        client = OpenAI(
+            api_key=settings.groq_api_key,
+            base_url="https://api.groq.com/openai/v1",
+        )
+        model_name = settings.groq_whisper_model or "whisper-large-v3"
+    else:
+        print("Using OpenAI Whisper API (model=whisper-1)...")
+        client = OpenAI(api_key=settings.openai_api_key)
+        model_name = "whisper-1"
+
+    with open(audio_path, "rb") as audio_file:
+        response = client.audio.transcriptions.create(
+            file=audio_file,
+            model=model_name,
+            language=language or "th",
+            prompt=initial_prompt or settings.initial_prompt,
+            response_format="verbose_json",
+            timestamp_granularities=["segment"],
+        )
+
+    segments: list[SimpleSegment] = []
+    raw_segments = getattr(response, "segments", []) or []
+
+    for idx, seg in enumerate(raw_segments):
+        seg_dict = seg if isinstance(seg, dict) else seg.model_dump() if hasattr(seg, "model_dump") else vars(seg)
+        seg_text = str(seg_dict.get("text", "")).strip()
+        if not seg_text:
+            continue
+        start_val = float(seg_dict.get("start", 0.0))
+        end_val = float(seg_dict.get("end", 0.0))
+        segments.append(
+            SimpleSegment(
+                id=idx,
+                start=round(start_val, 3),
+                end=round(end_val, 3),
+                text=seg_text,
+            )
+        )
+
+    # Fallback if no segments returned (single whole text)
+    if not segments and getattr(response, "text", ""):
+        full_txt = str(response.text).strip()
+        if full_txt:
+            duration_val = getattr(response, "duration", 0.0) or 0.0
+            segments.append(
+                SimpleSegment(
+                    id=0,
+                    start=0.0,
+                    end=float(duration_val),
+                    text=full_txt,
+                )
+            )
+
+    duration = getattr(response, "duration", None)
+    detected_lang = getattr(response, "language", language or "th")
+    return segments, duration, detected_lang
+
+
 @lru_cache(maxsize=1)
-def get_model() -> WhisperModel:
+def get_model():
+    from faster_whisper import WhisperModel
     settings = get_settings()
 
     return WhisperModel(

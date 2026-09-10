@@ -53,11 +53,18 @@ def startup() -> None:
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "model": settings.model_size, "device": settings.device}
+    return {
+        "status": "ok",
+        "provider": settings.transcription_provider,
+        "model": settings.groq_whisper_model if settings.transcription_provider == "groq" else settings.model_size,
+        "device": settings.device,
+    }
 
 
 @app.post("/v1/warmup")
 def warmup() -> dict[str, str]:
+    if settings.groq_api_key or settings.transcription_provider in {"groq", "openai"}:
+        return {"status": "ready", "provider": settings.transcription_provider}
     get_model()
     return {"status": "ready", "model": settings.model_size}
 
