@@ -179,8 +179,8 @@ def run_whisperx_pipeline(
     resolved_max_speakers = max_speakers if max_speakers is not None else settings.max_speakers
 
     def do_diarize():
-        if not settings.huggingface_token:
-            print("No HUGGINGFACE_TOKEN provided, skipping Pyannote diarization (using AI context role classification)...")
+        if settings.transcription_provider == "groq" or not settings.huggingface_token:
+            print("Using ultra-fast cloud pipeline: AI Role classification enabled (skipping slow CPU Pyannote)...")
             return []
         print(f"Pyannote diarization starting (num_speakers={resolved_num_speakers}, min={resolved_min_speakers}, max={resolved_max_speakers})...")
         return diarize_audio(
