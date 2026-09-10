@@ -50,6 +50,15 @@ app.add_middleware(
 def startup() -> None:
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
 
+@app.get("/")
+def root() -> dict[str, str]:
+    return {
+        "status": "online",
+        "message": "SMART-DRG Whisper & Clinical AI API is running",
+        "docs": "/docs",
+        "health": "/health",
+    }
+
 
 @app.get("/health")
 def health() -> dict[str, str]:
