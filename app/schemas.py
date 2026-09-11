@@ -80,6 +80,8 @@ class VitalSignsData(BaseModel):
 class MedicalFormExtractIn(BaseModel):
     text: str
     provider: str | None = None
+    allergies: str | None = None
+    patient_name: str | None = None
 
 
 class MedicalFormExtractOut(BaseModel):
@@ -102,6 +104,7 @@ class MedicalFormExtractOut(BaseModel):
     investigations: list[str] = Field(default_factory=list)
     assessmentForms: list[str] = Field(default_factory=list)
     assessments: dict[str, dict] = Field(default_factory=dict)
+    safetyAlerts: list[dict] = Field(default_factory=list)
     note: str = ""
     disposition: str = ""
     rawText: str = ""
@@ -137,4 +140,5 @@ class ClinicalChatOut(BaseModel):
     reply: str
     structured_action: dict | None = None
     suggested_quick_prompts: list[str] = Field(default_factory=list)
+    safety_alerts: list[dict] = Field(default_factory=list)
     provider_used: str = "gemini"

@@ -1017,17 +1017,208 @@ def parse_medical_code_and_desc(
     return code_clean, desc, full
 
 
-def enrich_icd10(raw_icd: str, dx: str = "") -> str:
-    _, _, full = parse_medical_code_and_desc(raw_icd, ICD10_DESCRIPTIONS, fallback_desc=dx)
-    return full
+# ==============================================================================
+# Comprehensive Drug Allergy & Cross-Reactivity Clinical Knowledge Base
+# ==============================================================================
+
+DRUG_ALLERGY_CATEGORIES = [
+    {
+        "group_id": "penicillins",
+        "group_name": "Penicillins & Beta-lactams",
+        "group_name_th": "กลุ่มเพนิซิลลินและเบต้า-แลคแทม",
+        "allergen_keywords": [
+            "penicillin", "เพนิซิลลิน", "เพนนิซิลิน", "amoxicillin", "อะม็อกซีซิลลิน", "อะมอกซิซิลลิน",
+            "augmentin", "อ็อกเมนติน", "ออกเมนติน", "ampicillin", "แอมพิซิลลิน", "cloxacillin", "โคลซาซิลลิน",
+            "dicloxacillin", "ไดคลอกซาซิลลิน", "ไดคล็อกซาซิลลิน", "unasyn", "tazocin", "piperacillin"
+        ],
+        "drugs": [
+            {"name": "Penicillin V / G", "keywords": ["penicillin", "เพนิซิลลิน", "เพนนิซิลิน", "pen v", "pen g"]},
+            {"name": "Amoxicillin", "keywords": ["amoxicillin", "อะม็อกซีซิลลิน", "อะมอกซิซิลลิน", "amoxycillin", "amoxy", "amoxil"]},
+            {"name": "Amoxicillin/Clavulanate (Augmentin)", "keywords": ["augmentin", "อ็อกเมนติน", "ออกเมนติน", "amoxicillin/clavulanate", "amox-clav", "clavulanate"]},
+            {"name": "Ampicillin", "keywords": ["ampicillin", "แอมพิซิลลิน"]},
+            {"name": "Cloxacillin", "keywords": ["cloxacillin", "โคลซาซิลลิน"]},
+            {"name": "Dicloxacillin", "keywords": ["dicloxacillin", "ไดคลอกซาซิลลิน", "ไดคล็อกซาซิลลิน", "diclox"]},
+            {"name": "Piperacillin/Tazobactam (Tazocin)", "keywords": ["tazocin", "piperacillin", "ทาโซซิน"]},
+            {"name": "Ampicillin/Sulbactam (Unasyn)", "keywords": ["unasyn", "ยูนาซิน"]},
+            {"name": "Cephalexin", "keywords": ["cephalexin", "เซฟาเลกซิน", "keflex"]},
+            {"name": "Ceftriaxone", "keywords": ["ceftriaxone", "เซฟไตรอะโซน", "rocephin"]},
+            {"name": "Cefazolin", "keywords": ["cefazolin", "เซฟาโซลิน"]},
+            {"name": "Cefixime", "keywords": ["cefixime", "เซฟิกซิม"]},
+            {"name": "Cefotaxime", "keywords": ["cefotaxime", "เซโฟแทกซิม"]},
+            {"name": "Meropenem", "keywords": ["meropenem", "เมโรพีเนม"]},
+        ],
+        "default_recommendation": "ผู้ป่วยมีประวัติแพ้ยาในกลุ่ม Penicillin/Beta-lactam ควรหลีกเลี่ยงการใช้ยาทันที และพิจารณาใช้ยากลุ่มอื่นทดแทน เช่น Macrolides (Azithromycin) หรือ Fluoroquinolones ตามข้อบ่งชี้",
+    },
+    {
+        "group_id": "sulfa",
+        "group_name": "Sulfonamides (Sulfa drugs)",
+        "group_name_th": "กลุ่มซัลฟา (Sulfonamides)",
+        "allergen_keywords": ["sulfa", "ซัลฟา", "sulfonamide", "bactrim", "แบคทริม", "co-trimoxazole", "โคไตรม็อกซาโซล"],
+        "drugs": [
+            {"name": "Co-trimoxazole / Bactrim", "keywords": ["bactrim", "แบคทริม", "co-trimoxazole", "sulfamethoxazole", "trimethoprim"]},
+            {"name": "Silver Sulfadiazine (Silvazine)", "keywords": ["silver sulfadiazine", "ซิลวาซีน", "silvazine"]},
+            {"name": "Sulfasalazine", "keywords": ["sulfasalazine", "ซัลฟาซาลาซีน"]},
+        ],
+        "default_recommendation": "ผู้ป่วยมีประวัติแพ้ยาในกลุ่ม Sulfa ควรหลีกเลี่ยงการใช้ยาที่มีส่วนผสมของ Sulfonamide เพื่อป้องกันการเกิดภาวะผื่นแพ้รุนแรง (SJS/TEN)",
+    },
+    {
+        "group_id": "nsaids",
+        "group_name": "NSAIDs & Aspirin",
+        "group_name_th": "กลุ่มยาแก้ปวดแก้อักเสบที่ไม่ใช่สเตียรอยด์ (NSAIDs) และแอสไพริน",
+        "allergen_keywords": [
+            "nsaid", "nsaids", "เอ็นเสด", "เอนเสด", "aspirin", "แอสไพริน", "ibuprofen", "ไอบูโพรเฟน",
+            "naproxen", "นาพร็อกเซน", "diclofenac", "ไดโคลฟีแนค", "ponstan", "พอนสแตน", "mefenamic",
+            "meloxicam", "celebrex", "celecoxib", "arcoxia", "etoricoxib", "indomethacin"
+        ],
+        "drugs": [
+            {"name": "Aspirin", "keywords": ["aspirin", "แอสไพริน", "asa"]},
+            {"name": "Ibuprofen", "keywords": ["ibuprofen", "ไอบูโพรเฟน", "brufen", "nurofen"]},
+            {"name": "Naproxen", "keywords": ["naproxen", "นาพร็อกเซน", "synflex"]},
+            {"name": "Diclofenac", "keywords": ["diclofenac", "ไดโคลฟีแนค", "voltaren"]},
+            {"name": "Mefenamic acid (Ponstan)", "keywords": ["ponstan", "พอนสแตน", "mefenamic"]},
+            {"name": "Meloxicam", "keywords": ["meloxicam", "โมบิค", "mobic"]},
+            {"name": "Celecoxib (Celebrex)", "keywords": ["celebrex", "celecoxib", "เซเลเบร็กซ์", "เซเลโคซิบ"]},
+            {"name": "Etoricoxib (Arcoxia)", "keywords": ["arcoxia", "etoricoxib", "อาร์ค็อกเซีย"]},
+            {"name": "Indomethacin", "keywords": ["indomethacin", "อินโดเมธาซิน"]},
+        ],
+        "default_recommendation": "ผู้ป่วยมีประวัติแพ้ยาในกลุ่ม NSAIDs/Aspirin ควรหลีกเลี่ยงการใช้ยาแก้ปวดกลุ่ม NSAIDs ทุกชนิด และใช้ Paracetamol หรือ Tramadol/Opioids ตามความเหมาะสม",
+    },
+    {
+        "group_id": "fluoroquinolones",
+        "group_name": "Fluoroquinolones",
+        "group_name_th": "กลุ่มฟลูออโรควิโนโลน",
+        "allergen_keywords": ["ciprofloxacin", "ซิโปรฟลอกซาซิน", "levofloxacin", "เลโวฟลอกซาซิน", "norfloxacin", "นอร์ฟลอกซาซิน", "ofloxacin", "quinolone", "ควิโนโลน"],
+        "drugs": [
+            {"name": "Ciprofloxacin", "keywords": ["ciprofloxacin", "ซิโปรฟลอกซาซิน", "cipro"]},
+            {"name": "Levofloxacin", "keywords": ["levofloxacin", "เลโวฟลอกซาซิน", "cravit"]},
+            {"name": "Norfloxacin", "keywords": ["norfloxacin", "นอร์ฟลอกซาซิน"]},
+            {"name": "Moxifloxacin", "keywords": ["moxifloxacin", "โมซิกฟลอกซาซิน", "avelox"]},
+            {"name": "Ofloxacin", "keywords": ["ofloxacin", "ออฟลอกซาซิน", "tarivid"]},
+        ],
+        "default_recommendation": "ผู้ป่วยมีประวัติแพ้ยากลุ่ม Fluoroquinolones ควรหลีกเลี่ยงการใช้ยากลุ่มนี้ทุกตัว",
+    },
+    {
+        "group_id": "macrolides",
+        "group_name": "Macrolides",
+        "group_name_th": "กลุ่มแมคโครไลด์",
+        "allergen_keywords": ["azithromycin", "อะซิโธรมัยซิน", "erythromycin", "อีริโธรมัยซิน", "clarithromycin", "คลาริโธรมัยซิน", "roxithromycin", "ร็อกซิโธรมัยซิน", "macrolide"],
+        "drugs": [
+            {"name": "Azithromycin", "keywords": ["azithromycin", "อะซิโธรมัยซิน", "zithromax"]},
+            {"name": "Clarithromycin", "keywords": ["clarithromycin", "คลาริโธรมัยซิน", "klacid"]},
+            {"name": "Erythromycin", "keywords": ["erythromycin", "อีริโธรมัยซิน"]},
+            {"name": "Roxithromycin", "keywords": ["roxithromycin", "ร็อกซิโธรมัยซิน", "rulid"]},
+        ],
+        "default_recommendation": "ผู้ป่วยมีประวัติแพ้ยากลุ่ม Macrolides ควรหลีกเลี่ยงการใช้ยากลุ่มนี้",
+    },
+    {
+        "group_id": "anticonvulsants",
+        "group_name": "Aromatic Anticonvulsants",
+        "group_name_th": "กลุ่มยากันชักอะโรมาติก",
+        "allergen_keywords": ["carbamazepine", "คาร์บามาเซปีน", "tegretol", "phenytoin", "ไดแลนติน", "dilantin", "phenobarbital", "lamotrigine"],
+        "drugs": [
+            {"name": "Carbamazepine", "keywords": ["carbamazepine", "คาร์บามาเซปีน", "tegretol"]},
+            {"name": "Phenytoin", "keywords": ["phenytoin", "ไดแลนติน", "dilantin"]},
+            {"name": "Phenobarbital", "keywords": ["phenobarbital", "ฟีโนบาร์บิตาล"]},
+            {"name": "Lamotrigine", "keywords": ["lamotrigine", "ลาโมทริจีน", "lamictal"]},
+        ],
+        "default_recommendation": "ผู้ป่วยมีประวัติแพ้ยากันชัก มีความเสี่ยงเกิดปฏิกิริยาข้ามกลุ่มสูง ควรพิจารณาตรวจยีน HLA-B*1502 หรือใช้ยากลุ่ม Non-aromatic เช่น Levetiracetam / Sodium Valproate",
+    },
+    {
+        "group_id": "allopurinol",
+        "group_name": "Allopurinol",
+        "group_name_th": "ยาลดกรดยูริก Allopurinol",
+        "allergen_keywords": ["allopurinol", "อัลโลพูรินอล", "zyloric"],
+        "drugs": [
+            {"name": "Allopurinol", "keywords": ["allopurinol", "อัลโลพูรินอล", "zyloric"]},
+        ],
+        "default_recommendation": "ผู้ป่วยมีประวัติแพ้ยา Allopurinol ควรหลีกเลี่ยง และพิจารณาใช้ Febuxostat หรือยาขับกรดยูริกกลุ่มอื่นแทน",
+    },
+]
 
 
-def enrich_icd9(raw_icd: str) -> str:
-    _, _, full = parse_medical_code_and_desc(raw_icd, ICD9_DESCRIPTIONS)
-    return full
+def detect_drug_safety_alerts(
+    text: str,
+    patient_allergies: str | None = None,
+    treatment_plan: str | None = None,
+) -> list[dict]:
+    """
+    Detects drug allergy conflicts and clinical safety warnings between:
+    1. Patient allergy history (profile or transcript)
+    2. Prescribed / ordered drugs in consultation transcript or treatment plan.
+    """
+    alerts = []
+    combined_text = f"{text or ''} {treatment_plan or ''}".lower()
+    allergies_input = (patient_allergies or "").lower().strip()
+
+    # Step 1: Identify active patient allergens
+    active_allergen_groups = set()
+    allergen_labels = {}
+
+    for cat in DRUG_ALLERGY_CATEGORIES:
+        matched_kw = None
+        # Check explicit patient profile allergies
+        if allergies_input and allergies_input not in {"-", "none", "null", "ไม่มี", "ปฏิเสธการแพ้ยา", "ไม่แพ้"}:
+            for kw in cat["allergen_keywords"]:
+                if kw in allergies_input:
+                    matched_kw = kw
+                    break
+        # Also check transcript if patient explicitly mentions allergy
+        if not matched_kw:
+            pattern = rf"(?:แพ้|ประวัติแพ้|เคยแพ้|แพ้ยา|allergy|allergic)\s*(?:ยา)?\s*([ก-ฮa-zA-Z0-9\s\/\-\(\)]*?)(?:{cat['group_id']}|{'|'.join(cat['allergen_keywords'])})"
+            if re.search(pattern, combined_text, re.IGNORECASE):
+                for kw in cat["allergen_keywords"]:
+                    if kw in combined_text:
+                        matched_kw = kw
+                        break
+
+        if matched_kw:
+            active_allergen_groups.add(cat["group_id"])
+            allergen_labels[cat["group_id"]] = patient_allergies if patient_allergies else matched_kw
+
+    # Step 2: For each active allergen group, check if a conflicting drug is ordered/prescribed in text
+    alert_idx = 1
+    for cat in DRUG_ALLERGY_CATEGORIES:
+        if cat["group_id"] not in active_allergen_groups:
+            continue
+
+        allergen_label = allergen_labels.get(cat["group_id"]) or cat["group_name_th"]
+
+        for drug_info in cat["drugs"]:
+            matched_drug = False
+            for d_kw in drug_info["keywords"]:
+                # Match drug keyword in text
+                if d_kw in combined_text:
+                    # Negation check: verify the doctor didn't explicitly say "not giving" or "avoid"
+                    negation_pattern = rf"(?:ไม่จ่าย|หลีกเลี่ยง|ห้ามใช้|งด|ไม่สั่ง|แพ้|ประวัติแพ้)\s*(?:ยา)?\s*{re.escape(d_kw)}"
+                    if not re.search(negation_pattern, combined_text, re.IGNORECASE):
+                        matched_drug = True
+                        break
+
+            if matched_drug:
+                alerts.append({
+                    "id": f"drug-allergy-{alert_idx}",
+                    "type": "drug_allergy",
+                    "severity": "CRITICAL",
+                    "badge": "CRITICAL SAFETY ALERT",
+                    "title": f"คำเตือนความปลอดภัย: พบความเสี่ยงแพ้ยา {drug_info['name']}",
+                    "drug": drug_info["name"],
+                    "allergen": allergen_label,
+                    "groupName": cat["group_name_th"],
+                    "message": f"ผู้ป่วยมีประวัติแพ้ยา '{allergen_label}' แต่พบการสั่งยา '{drug_info['name']}' ในกลุ่ม {cat['group_name_th']} ({cat['group_name']}) ซึ่งมีความเสี่ยงสูงที่จะเกิดปฏิกิริยาแพ้ยารุนแรง (Anaphylaxis / Severe Allergic Reaction)",
+                    "recommendation": cat["default_recommendation"],
+                    "color": "red",
+                })
+                alert_idx += 1
+
+    return alerts
 
 
-def extract_medical_form(text: str, provider: str | None = None) -> MedicalFormExtractOut:
+def extract_medical_form(
+    text: str,
+    provider: str | None = None,
+    allergies: str | None = None,
+    patient_name: str | None = None,
+) -> MedicalFormExtractOut:
     settings = get_settings()
     clean_text = apply_dictionary(text)
 
@@ -1182,6 +1373,9 @@ def extract_medical_form(text: str, provider: str | None = None) -> MedicalFormE
         raw_drg, DRG_DESCRIPTIONS, fallback_desc="", explicit_desc=raw_drg_desc
     )
 
+    treatment_plan_str = extracted_data.get("note") or extracted_data.get("treatment_plan", "") or ""
+    safety_alerts = detect_drug_safety_alerts(clean_text, patient_allergies=allergies, treatment_plan=treatment_plan_str)
+
     return MedicalFormExtractOut(
         chiefComplaint=extracted_data.get("chiefComplaint") or extracted_data.get("chief_complaint", "") or "",
         presentIllness=extracted_data.get("presentIllness") or extracted_data.get("present_illness", "") or "",
@@ -1202,7 +1396,8 @@ def extract_medical_form(text: str, provider: str | None = None) -> MedicalFormE
         investigations=inv_list,
         assessmentForms=resolved_forms,
         assessments=final_assessments,
-        note=extracted_data.get("note") or extracted_data.get("treatment_plan", "") or "",
+        safetyAlerts=safety_alerts,
+        note=treatment_plan_str,
         disposition=extracted_data.get("disposition", "") or "",
         rawText=clean_text,
         extractedBy=extracted_by,

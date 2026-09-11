@@ -12,13 +12,14 @@ CLINICAL_COPILOT_SYSTEM_PROMPT = """คุณคือ "Clinical AI Copilot" ร
 2. ตอบคำถามทางคลินิกอย่างกระชับ แม่นยำ อิงตามหลักฐานทางการแพทย์ (Evidence-Based Medicine)
 3. ช่วยสรุปและจัดทำ SOAP Note (Subjective, Objective, Assessment, Plan), แนะนำรหัส ICD-10, ICD-9-CM, และ Thai DRG
 4. ตรวจสอบความปลอดภัยในการสั่งยา (Drug-Drug Interaction, Contraindications, Renal Dose Adjustment)
-5. เตือนภาวะวิกฤต หรือ Red Flags (เช่น Sepsis, Acute Coronary Syndrome, Stroke) เสมอหากพบความผิดปกติในข้อมูล
+5. เตือนภาวะวิกฤต หรือ Red Flags เสมอหากพบความผิดปกติในข้อมูล
 
 แนวทางการตอบ:
 - ใช้ภาษาไทยผสมคำศัพท์ทางการแพทย์สากลอย่างเป็นธรรมชาติ สุภาพ เป็นมืออาชีพ
-- หากแพทย์ต้องการสรุปข้อมูลลงฟอร์ม ให้สรุปเนื้อหาให้ชัดเจน และในตอนท้ายคุณสามารถระบุ Action Block ในรูปแบบ JSON ภายใต้แท็ก ```json:action เพื่อให้ระบบส่งต่อข้อมูลไปกรอกลงฟอร์มในหน้าจอได้อัตโนมัติ
+- เขียนคำอธิบายสรุปเป็นข้อความ Markdown ที่อ่านง่ายสำหรับแพทย์เสมอ
+- หากมีการสรุปหรือแก้ไขฟอร์ม ให้เขียนสรุปสำหรับแพทย์ให้อ่านก่อน แล้วปิดท้ายด้วย Action Block ภายใต้แท็ก ```json:action (ห้ามแสดง JSON ดิบในเนื้อหาข้อความทั่วไป)
 
-โครงสร้าง Action Block ตัวอย่าง (ใส่เฉพาะเมื่อมีการสรุปหรือแก้ไขฟอร์ม):
+โครงสร้าง Action Block ตัวอย่าง:
 ```json:action
 {
   "action_type": "update_form",
@@ -75,20 +76,87 @@ def build_context_prompt(context: PatientContext | None) -> str:
     return "\n".join(parts)
 
 
+def clean_markdown_formatting(text: str) -> str:
+    """
+    Strip raw Markdown syntax (###, **, *, `) to return clean, natural text for UI display.
+    """
+    if not text:
+        return ""
+    # Strip markdown headers (e.g. ### Header or ## Header -> Header)
+    cleaned = re.sub(r"^[#]{1,6}\s*", "", text, flags=re.MULTILINE)
+    # Strip bold markdown (**text** or __text__ -> text)
+    cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", cleaned)
+    cleaned = re.sub(r"__(.*?)__", r"\1", cleaned)
+    # Strip italic markdown (*text* -> text)
+    cleaned = re.sub(r"(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)", r"\1", cleaned)
+    # Convert asterisk bullet points (* item -> - item)
+    cleaned = re.sub(r"^\s*\*\s+", "- ", cleaned, flags=re.MULTILINE)
+    # Strip inline backticks (`code` -> code)
+    cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
+    # Clean leftover dangling asterisks or hashes
+    cleaned = re.sub(r"\*\*|\*|##+|#", "", cleaned)
+    # Normalize spaces and newlines
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def parse_action_block(text: str) -> tuple[str, dict | None]:
-    """Extract ```json:action block if present."""
+    """
+    Extract action data from JSON blocks and clean text completely so raw JSON and markdown symbols are NEVER shown to the user.
+    """
+    if not text:
+        return "", None
+
     action_data = None
-    pattern = r"```json:action\s*([\s\S]*?)\s*```"
-    match = re.search(pattern, text)
+    clean_text = text
+
+    # 1. Try matching closed code block ```json:action ... ``` or ```json ... ``` containing action_type
+    pattern_closed = r"```(?:json:action|action|json)?\s*(\{[\s\S]*?\"action_type\"[\s\S]*?\})\s*```"
+    match = re.search(pattern_closed, clean_text, re.IGNORECASE)
     if match:
+        raw_json_str = match.group(1).strip()
         try:
-            action_data = json.loads(match.group(1).strip())
-            # Clean text by removing the raw json:action block or leaving clean markdown
-            clean_text = re.sub(pattern, "", text).strip()
-            return clean_text, action_data
-        except Exception as e:
-            print(f"[ACTION PARSE ERROR] {e}")
-    return text, None
+            action_data = json.loads(raw_json_str)
+        except Exception:
+            pass
+        clean_text = re.sub(pattern_closed, "", clean_text, flags=re.IGNORECASE).strip()
+
+    # 2. Try matching unclosed ```json:action block at the end of the text
+    pattern_unclosed = r"```(?:json:action|action)[\s\S]*$"
+    if re.search(pattern_unclosed, clean_text, re.IGNORECASE):
+        if not action_data:
+            m_unclosed = re.search(r"```(?:json:action|action)\s*(\{[\s\S]*)$", clean_text, re.IGNORECASE)
+            if m_unclosed:
+                partial_json = m_unclosed.group(1).strip()
+                try:
+                    repaired_json = partial_json
+                    if repaired_json.count("{") > repaired_json.count("}"):
+                        repaired_json += "}" * (repaired_json.count("{") - repaired_json.count("}"))
+                    action_data = json.loads(repaired_json)
+                except Exception:
+                    pass
+        clean_text = re.sub(pattern_unclosed, "", clean_text, flags=re.IGNORECASE).strip()
+
+    # 3. Clean any leftover raw JSON action blocks without markdown backticks
+    pattern_raw_json = r"\{[\s\r\n]*\"action_type\"\s*:\s*\"[^\"]+\"[\s\S]*?\}"
+    m_raw = re.search(pattern_raw_json, clean_text)
+    if m_raw:
+        if not action_data:
+            try:
+                action_data = json.loads(m_raw.group(0).strip())
+            except Exception:
+                pass
+        clean_text = re.sub(pattern_raw_json, "", clean_text).strip()
+
+    # 4. If clean_text became empty because the model only returned JSON, provide a pleasant fallback message
+    if not clean_text and action_data:
+        diag = action_data.get("data", {}).get("provisionalDiagnosis") or action_data.get("data", {}).get("icd10") or "เรียบร้อย"
+        clean_text = f"📋 ผมได้จัดเตรียมข้อมูล SOAP Note และการวินิจฉัย ({diag}) เพื่ออัปเดตลงในแบบฟอร์มการตรวจรักษาให้เรียบร้อยแล้วครับ"
+
+    # 5. Strip markdown symbols (###, **, *, `) for clean UI rendering
+    clean_text = clean_markdown_formatting(clean_text)
+    return clean_text, action_data
 
 
 def generate_suggested_prompts(context: PatientContext | None, last_reply: str) -> list[str]:
@@ -315,6 +383,13 @@ def run_clinical_chat(payload: ClinicalChatIn) -> ClinicalChatOut:
 
     last_user_msg = raw_messages[-1]["content"] if raw_messages else ""
 
+    from app.extraction_service import detect_drug_safety_alerts
+
+    ctx_transcript = payload.patient_context.raw_transcript if payload.patient_context else ""
+    ctx_allergies = payload.patient_context.allergies if payload.patient_context else ""
+    combined_chat_history = " ".join([m.get("content", "") for m in raw_messages]) + " " + ctx_transcript
+    safety_alerts = detect_drug_safety_alerts(combined_chat_history, patient_allergies=ctx_allergies)
+
     # 1. Try Groq if provider is groq or groq_api_key available
     if (provider in {"groq", "auto"} or settings.transcription_provider == "groq") and settings.groq_api_key:
         try:
@@ -323,6 +398,7 @@ def run_clinical_chat(payload: ClinicalChatIn) -> ClinicalChatOut:
                 reply=reply,
                 structured_action=action,
                 suggested_quick_prompts=generate_suggested_prompts(payload.patient_context, reply),
+                safety_alerts=safety_alerts,
                 provider_used=f"groq:{settings.groq_llm_model}",
             )
         except Exception as e:
@@ -336,6 +412,7 @@ def run_clinical_chat(payload: ClinicalChatIn) -> ClinicalChatOut:
                 reply=reply,
                 structured_action=action,
                 suggested_quick_prompts=generate_suggested_prompts(payload.patient_context, reply),
+                safety_alerts=safety_alerts,
                 provider_used="gemini",
             )
         except Exception as e:
@@ -354,6 +431,7 @@ def run_clinical_chat(payload: ClinicalChatIn) -> ClinicalChatOut:
                 reply=reply,
                 structured_action=action,
                 suggested_quick_prompts=generate_suggested_prompts(payload.patient_context, reply),
+                safety_alerts=safety_alerts,
                 provider_used="openai",
             )
         except Exception as e:
@@ -367,6 +445,7 @@ def run_clinical_chat(payload: ClinicalChatIn) -> ClinicalChatOut:
                 reply=reply,
                 structured_action=action,
                 suggested_quick_prompts=generate_suggested_prompts(payload.patient_context, reply),
+                safety_alerts=safety_alerts,
                 provider_used=f"groq:{settings.groq_llm_model}",
             )
         except Exception as e:
@@ -378,5 +457,6 @@ def run_clinical_chat(payload: ClinicalChatIn) -> ClinicalChatOut:
         reply=reply,
         structured_action=action,
         suggested_quick_prompts=generate_suggested_prompts(payload.patient_context, reply),
+        safety_alerts=safety_alerts,
         provider_used="rule_based",
     )

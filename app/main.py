@@ -97,7 +97,12 @@ def postprocess(payload: PostProcessIn) -> PostProcessOut:
 
 @app.post("/v1/extract-form", response_model=MedicalFormExtractOut)
 def extract_form(payload: MedicalFormExtractIn) -> MedicalFormExtractOut:
-    return extract_medical_form(payload.text, provider=payload.provider)
+    return extract_medical_form(
+        payload.text,
+        provider=payload.provider,
+        allergies=payload.allergies,
+        patient_name=payload.patient_name,
+    )
 
 
 @app.post("/v1/chat/clinical", response_model=ClinicalChatOut)
