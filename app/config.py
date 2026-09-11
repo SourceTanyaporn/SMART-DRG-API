@@ -23,7 +23,7 @@ class Settings:
     no_repeat_ngram_size: int = int(os.getenv("WHISPER_NO_REPEAT_NGRAM_SIZE", "0"))
     initial_prompt: str | None = os.getenv(
         "WHISPER_INITIAL_PROMPT",
-        "การตรวจรักษาทางการแพทย์ สัญญาณชีพ Vital Signs อุณหภูมิ ความดันโลหิต ชีพจร อัตราการหายใจ ออกซิเจนในเลือด เสียงปอด ผนังคอหอย ไข้หวัดใหญ่ โควิด-19 ตรวจ Swab Antigen ยาต้านไวรัสเฉพาะทาง พาราเซตามอล",
+        "บทสนทนาการตรวจรักษาทางการแพทย์ คุณหมอ แพทย์ คนไข้ ผู้ป่วย หมอเห็นผล ซักประวัติ ตรวจร่างกาย สัญญาณชีพ ความดัน ชีพจร อุณหภูมิ อาการ วินิจฉัย การรักษา ยา และคำแนะนำทางการแพทย์",
     ) or None
 
     post_process_mode: str = os.getenv("TRANSCRIPT_POST_PROCESS", "dictionary")
@@ -37,10 +37,11 @@ class Settings:
     huggingface_token: str | None = os.getenv("HUGGINGFACE_TOKEN") or None
     groq_api_key: str | None = os.getenv("GROQ_API_KEY") or None
     groq_whisper_model: str = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3")
+    groq_llm_model: str = os.getenv("GROQ_LLM_MODEL", "llama-3.3-70b-versatile")
     transcription_provider: str = os.getenv("TRANSCRIPTION_PROVIDER", "groq" if os.getenv("GROQ_API_KEY") else "local")
 
 
-@lru_cache
 def get_settings() -> Settings:
+    load_dotenv(override=True)
     return Settings()
 

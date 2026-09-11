@@ -179,7 +179,7 @@ def run_whisperx_pipeline(
     resolved_max_speakers = max_speakers if max_speakers is not None else settings.max_speakers
 
     def do_diarize():
-        if settings.transcription_provider == "groq" or not settings.huggingface_token:
+        if settings.transcription_provider in {"groq", "gemini", "openai"} or not settings.huggingface_token:
             print("Using ultra-fast cloud pipeline: AI Role classification enabled (skipping slow CPU Pyannote)...")
             return []
         print(f"Pyannote diarization starting (num_speakers={resolved_num_speakers}, min={resolved_min_speakers}, max={resolved_max_speakers})...")
@@ -205,11 +205,12 @@ def run_whisperx_pipeline(
 
     final_segments = align_whisper_segments_with_speakers(whisper_segments, speaker_segments)
 
-    # Step 4: Sort and merge adjacent same-speaker segments, normalize speaker order chronologically
+    # Step 4: Sort and normalize speaker order chronologically
     final_segments.sort(key=lambda x: x["start"])
     final_segments = renumber_speakers_chronologically(final_segments)
-    final_segments = merge_same_speaker_segments(final_segments, max_gap=0.6)
-    final_segments = renumber_speakers_chronologically(final_segments)
+    if speaker_segments:
+        final_segments = merge_same_speaker_segments(final_segments, max_gap=0.6)
+        final_segments = renumber_speakers_chronologically(final_segments)
 
     # Step 5: Post-processing (Dictionary, Homoglyph Normalizer & AI Proofreading)
     if progress_callback:

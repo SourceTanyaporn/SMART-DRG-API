@@ -80,15 +80,13 @@ def warmup() -> dict[str, str]:
 
 @app.post("/v1/postprocess", response_model=PostProcessOut)
 def postprocess(payload: PostProcessIn) -> PostProcessOut:
-    if payload.post_process == "openai" and not settings.openai_api_key:
-        raise HTTPException(
-            status_code=400,
-            detail="OPENAI_API_KEY is required when post_process=openai",
-        )
+    target_mode = payload.post_process
+    if target_mode == "openai" and not settings.openai_api_key:
+        target_mode = settings.post_process_mode or "groq"
 
     corrected_text, post_processed_by = post_process_transcript(
         payload.text,
-        payload.post_process,
+        target_mode,
     )
     return PostProcessOut(
         text=corrected_text,
@@ -184,11 +182,9 @@ async def transcribe(
         else settings.default_vad_filter
     )
 
-    if post_process == "openai" and not settings.openai_api_key:
-        raise HTTPException(
-            status_code=400,
-            detail="OPENAI_API_KEY is required when post_process=openai",
-        )
+    resolved_post_process = post_process
+    if resolved_post_process == "openai" and not settings.openai_api_key:
+        resolved_post_process = settings.post_process_mode or "groq"
 
     if task not in {"transcribe", "translate"}:
         raise HTTPException(
@@ -245,7 +241,7 @@ async def transcribe(
             resolved_beam_size,
             resolved_vad_filter,
             initial_prompt or settings.initial_prompt,
-            post_process,
+            resolved_post_process,
         )
         return {
             "job_id": job_id,

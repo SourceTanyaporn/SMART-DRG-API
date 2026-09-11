@@ -3,6 +3,8 @@ import app.hf_patch
 from pathlib import Path
 import subprocess
 import shutil
+import soundfile as sf
+import torch
 
 from app.config import get_settings
 

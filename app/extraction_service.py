@@ -154,8 +154,34 @@ def compute_bmi(weight_val: float | int | str | None, height_val: float | int | 
     return None
 
 
+def extract_with_groq(text: str, api_key: str, model: str = "llama-3.3-70b-versatile") -> dict | None:
+    try:
+        client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
+        response = client.chat.completions.create(
+            model=model or "llama-3.3-70b-versatile",
+            temperature=0.1,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+                {"role": "user", "content": f"บทสนทนาทางการแพทย์:\n\n{text}"},
+            ],
+            timeout=30,
+        )
+        content = response.choices[0].message.content
+        if content:
+            raw_text = content.strip()
+            raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.IGNORECASE)
+            raw_text = re.sub(r"\s*```$", "", raw_text)
+            res = json.loads(raw_text)
+            if isinstance(res, dict):
+                return res
+    except Exception as e:
+        print(f"[EXTRACT ERROR] Groq extraction failed: {e}")
+    return None
+
+
 def extract_with_gemini(text: str, api_key: str) -> dict | None:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+    models = ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
     payload = {
         "system_instruction": {"parts": [{"text": EXTRACTION_SYSTEM_PROMPT}]},
         "contents": [{"parts": [{"text": f"บทสนทนาทางการแพทย์:\n\n{text}"}]}],
@@ -164,20 +190,28 @@ def extract_with_gemini(text: str, api_key: str) -> dict | None:
             "responseMimeType": "application/json",
         },
     }
-    try:
-        resp = requests.post(url, json=payload, timeout=30)
-        if resp.status_code == 200:
-            data = resp.json()
-            candidates = data.get("candidates", [])
-            if candidates:
-                raw_text = candidates[0]["content"]["parts"][0]["text"].strip()
-                raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.IGNORECASE)
-                raw_text = re.sub(r"\s*```$", "", raw_text)
-                res = json.loads(raw_text)
-                if isinstance(res, dict):
-                    return res
-    except Exception as e:
-        print(f"[EXTRACT ERROR] Gemini extraction failed: {e}")
+    api_k = str(api_key).strip()
+    headers = {
+        "x-goog-api-key": api_k,
+        "Authorization": f"Bearer {api_k}",
+        "Content-Type": "application/json",
+    }
+    for m in models:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_k}"
+            resp = requests.post(url, json=payload, headers=headers, timeout=25)
+            if resp.status_code == 200:
+                data = resp.json()
+                candidates = data.get("candidates", [])
+                if candidates:
+                    raw_text = candidates[0]["content"]["parts"][0]["text"].strip()
+                    raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.IGNORECASE)
+                    raw_text = re.sub(r"\s*```$", "", raw_text)
+                    res = json.loads(raw_text)
+                    if isinstance(res, dict):
+                        return res
+        except Exception:
+            pass
     return None
 
 
@@ -1000,21 +1034,35 @@ def extract_medical_form(text: str, provider: str | None = None) -> MedicalFormE
     extracted_data = None
     extracted_by = "rule_based"
 
-    # Strategy 1: Gemini if key available
-    if (provider in {None, "auto", "gemini"}) and settings.gemini_api_key:
+    # Strategy 1: Groq LLM if key available or provider is groq
+    if not extracted_data and (provider in {None, "auto", "groq"} or settings.transcription_provider == "groq") and settings.groq_api_key:
+        print("[EXTRACT] Attempting Groq extraction...")
+        extracted_data = extract_with_groq(clean_text, settings.groq_api_key, settings.groq_llm_model)
+        if extracted_data:
+            extracted_by = f"groq:{settings.groq_llm_model}"
+
+    # Strategy 2: Gemini if key available
+    if not extracted_data and (provider in {None, "auto", "gemini"}) and settings.gemini_api_key:
         print("[EXTRACT] Attempting Gemini extraction...")
         extracted_data = extract_with_gemini(clean_text, settings.gemini_api_key)
         if extracted_data:
             extracted_by = "gemini"
 
-    # Strategy 2: OpenAI if key available and Gemini not used
+    # Strategy 3: OpenAI if key available
     if not extracted_data and (provider in {None, "auto", "openai"}) and settings.openai_api_key:
         print("[EXTRACT] Attempting OpenAI extraction...")
         extracted_data = extract_with_openai(clean_text, settings.openai_api_key, settings.openai_model)
         if extracted_data:
             extracted_by = "openai"
 
-    # Strategy 3: Rule-based heuristic fallback
+    # Strategy 4: Groq fallback
+    if not extracted_data and settings.groq_api_key:
+        print("[EXTRACT] Attempting Groq fallback extraction...")
+        extracted_data = extract_with_groq(clean_text, settings.groq_api_key, settings.groq_llm_model)
+        if extracted_data:
+            extracted_by = f"groq:{settings.groq_llm_model}"
+
+    # Strategy 5: Rule-based heuristic fallback
     if not extracted_data or not isinstance(extracted_data, dict):
         print("[EXTRACT] Falling back to rule-based heuristic extraction...")
         extracted_data = extract_with_heuristics(clean_text)

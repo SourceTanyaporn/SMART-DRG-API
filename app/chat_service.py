@@ -106,13 +106,11 @@ def chat_with_gemini(
     context_str: str,
     api_key: str,
 ) -> tuple[str, dict | None]:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
-    
+    models = ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
     system_instruction = CLINICAL_COPILOT_SYSTEM_PROMPT
     if context_str:
         system_instruction += f"\n\n{context_str}"
 
-    # Ensure alternating user/model turns for Gemini API
     raw_turns: list[dict] = []
     for msg in messages:
         text_content = str(msg.get("content", "")).strip()
@@ -127,7 +125,6 @@ def chat_with_gemini(
     if not raw_turns:
         raw_turns = [{"role": "user", "parts": [{"text": "สวัสดีครับ ช่วยสรุปข้อมูลทางการแพทย์ให้หน่อย"}]}]
 
-    # Ensure starts with user
     if raw_turns[0]["role"] != "user":
         raw_turns.insert(0, {"role": "user", "parts": [{"text": "เริ่มต้นการสนทนาทางคลินิก"}]})
 
@@ -140,19 +137,54 @@ def chat_with_gemini(
         },
     }
 
-    resp = requests.post(url, json=payload, timeout=25)
-    if resp.status_code == 200:
-        data = resp.json()
-        candidates = data.get("candidates", [])
-        if candidates:
-            parts = candidates[0].get("content", {}).get("parts", [])
-            if parts and "text" in parts[0]:
-                raw_reply = parts[0]["text"]
-                clean_text, action = parse_action_block(raw_reply)
-                return clean_text, action
-        return "ขออภัยครับ ไม่สามารถสร้างคำตอบได้", None
-    else:
-        raise RuntimeError(f"Gemini API Error {resp.status_code}: {resp.text}")
+    api_k = str(api_key).strip()
+    headers = {
+        "x-goog-api-key": api_k,
+        "Authorization": f"Bearer {api_k}",
+        "Content-Type": "application/json",
+    }
+    for m in models:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_k}"
+            resp = requests.post(url, json=payload, headers=headers, timeout=25)
+            if resp.status_code == 200:
+                data = resp.json()
+                candidates = data.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if parts and "text" in parts[0]:
+                        raw_reply = parts[0]["text"]
+                        clean_text, action = parse_action_block(raw_reply)
+                        return clean_text, action
+        except Exception:
+            pass
+    raise RuntimeError("Gemini API call failed")
+
+
+def chat_with_groq(
+    messages: list[dict],
+    context_str: str,
+    api_key: str,
+    model: str = "llama-3.3-70b-versatile",
+) -> tuple[str, dict | None]:
+    client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
+    formatted_messages = [
+        {"role": "system", "content": CLINICAL_COPILOT_SYSTEM_PROMPT + (f"\n\n{context_str}" if context_str else "")}
+    ]
+    for msg in messages:
+        content = str(msg.get("content", "")).strip()
+        if content:
+            formatted_messages.append({"role": msg.get("role", "user"), "content": content})
+
+    response = client.chat.completions.create(
+        model=model or "llama-3.3-70b-versatile",
+        temperature=0.2,
+        messages=formatted_messages,
+        timeout=25,
+    )
+    raw_reply = response.choices[0].message.content or ""
+    clean_text, action = parse_action_block(raw_reply)
+    return clean_text, action
 
 
 def chat_with_openai(
@@ -283,7 +315,20 @@ def run_clinical_chat(payload: ClinicalChatIn) -> ClinicalChatOut:
 
     last_user_msg = raw_messages[-1]["content"] if raw_messages else ""
 
-    # 1. Try Gemini
+    # 1. Try Groq if provider is groq or groq_api_key available
+    if (provider in {"groq", "auto"} or settings.transcription_provider == "groq") and settings.groq_api_key:
+        try:
+            reply, action = chat_with_groq(raw_messages, context_str, settings.groq_api_key, settings.groq_llm_model)
+            return ClinicalChatOut(
+                reply=reply,
+                structured_action=action,
+                suggested_quick_prompts=generate_suggested_prompts(payload.patient_context, reply),
+                provider_used=f"groq:{settings.groq_llm_model}",
+            )
+        except Exception as e:
+            print(f"[CHAT ERROR] Groq API call failed: {e}")
+
+    # 2. Try Gemini
     if settings.gemini_api_key:
         try:
             reply, action = chat_with_gemini(raw_messages, context_str, settings.gemini_api_key)
@@ -296,7 +341,7 @@ def run_clinical_chat(payload: ClinicalChatIn) -> ClinicalChatOut:
         except Exception as e:
             print(f"[CHAT ERROR] Gemini API call failed: {e}")
 
-    # 2. Try OpenAI
+    # 3. Try OpenAI
     if settings.openai_api_key:
         try:
             reply, action = chat_with_openai(
@@ -314,7 +359,20 @@ def run_clinical_chat(payload: ClinicalChatIn) -> ClinicalChatOut:
         except Exception as e:
             print(f"[CHAT ERROR] OpenAI API call failed: {e}")
 
-    # 3. Graceful Local Clinical Rule-based Fallback (No 500 error!)
+    # 4. Groq fallback
+    if settings.groq_api_key:
+        try:
+            reply, action = chat_with_groq(raw_messages, context_str, settings.groq_api_key, settings.groq_llm_model)
+            return ClinicalChatOut(
+                reply=reply,
+                structured_action=action,
+                suggested_quick_prompts=generate_suggested_prompts(payload.patient_context, reply),
+                provider_used=f"groq:{settings.groq_llm_model}",
+            )
+        except Exception as e:
+            print(f"[CHAT ERROR] Groq fallback API call failed: {e}")
+
+    # 5. Graceful Local Clinical Rule-based Fallback (No 500 error!)
     reply, action = generate_rule_based_reply(last_user_msg, payload.patient_context)
     return ClinicalChatOut(
         reply=reply,
