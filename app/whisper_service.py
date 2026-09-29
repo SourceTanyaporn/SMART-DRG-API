@@ -169,12 +169,17 @@ def transcribe_with_cloud_api(
         client = OpenAI(api_key=settings.openai_api_key)
         model_name = "whisper-1"
 
+    # Groq & OpenAI Whisper API strictly require prompt length <= 896 bytes/characters
+    raw_prompt = (initial_prompt or settings.initial_prompt or "").strip()
+    encoded = raw_prompt.encode("utf-8")
+    safe_prompt = encoded[:750].decode("utf-8", errors="ignore") if len(encoded) > 750 else raw_prompt
+
     with open(audio_path, "rb") as audio_file:
         response = client.audio.transcriptions.create(
             file=audio_file,
             model=model_name,
             language=language or "th",
-            prompt=initial_prompt or settings.initial_prompt,
+            prompt=safe_prompt if safe_prompt else None,
             response_format="verbose_json",
             timestamp_granularities=["segment"],
         )

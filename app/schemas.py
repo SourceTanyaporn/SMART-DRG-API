@@ -94,6 +94,7 @@ class MedicalFormExtractOut(BaseModel):
     icd10: str = ""
     icd10Code: str = ""
     icd10Name: str = ""
+    secondaryIcd10: list[dict] = Field(default_factory=list)
     icd9: str = ""
     icd9Code: str = ""
     icd9Name: str = ""

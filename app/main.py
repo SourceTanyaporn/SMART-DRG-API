@@ -237,6 +237,10 @@ async def transcribe(
         print("TEMP FILE:", temp_path)
         print("FILE EXISTS:", temp_path.exists())
 
+        raw_prompt = (initial_prompt or settings.initial_prompt or "").strip()
+        encoded = raw_prompt.encode("utf-8")
+        safe_prompt = (encoded[:750].decode("utf-8", errors="ignore") if len(encoded) > 750 else raw_prompt) or None
+
         background_tasks.add_task(
             process_transcription,
             job_id,
@@ -245,7 +249,7 @@ async def transcribe(
             task,
             resolved_beam_size,
             resolved_vad_filter,
-            initial_prompt or settings.initial_prompt,
+            safe_prompt if safe_prompt else None,
             resolved_post_process,
         )
         return {

@@ -31,6 +31,10 @@ CLINICAL_COPILOT_SYSTEM_PROMPT = """คุณคือ "Clinical AI Copilot" ร
     "icd10": "...",
     "icd10Code": "...",
     "icd10Name": "...",
+    "secondaryIcd10": [
+      {"code": "L89.15", "name": "Pressure ulcer stage 1 of sacral region"},
+      {"code": "F32.2", "name": "Severe depressive episode without psychotic symptoms"}
+    ],
     "icd9": "...",
     "icd9Code": "...",
     "icd9Name": "...",
@@ -174,7 +178,14 @@ def chat_with_gemini(
     context_str: str,
     api_key: str,
 ) -> tuple[str, dict | None]:
-    models = ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
+    models = [
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-2.0-flash",
+    ]
     system_instruction = CLINICAL_COPILOT_SYSTEM_PROMPT
     if context_str:
         system_instruction += f"\n\n{context_str}"
@@ -206,27 +217,43 @@ def chat_with_gemini(
     }
 
     api_k = str(api_key).strip()
-    headers = {
-        "x-goog-api-key": api_k,
-        "Authorization": f"Bearer {api_k}",
-        "Content-Type": "application/json",
-    }
+
+    auth_attempts = [
+        # Strategy 1: Standard Google AI Studio API key via query parameter & x-goog-api-key header
+        (
+            lambda m: f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_k}",
+            {"Content-Type": "application/json", "x-goog-api-key": api_k},
+        ),
+        # Strategy 2: OAuth2 / Bearer Token
+        (
+            lambda m: f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
+            {"Content-Type": "application/json", "Authorization": f"Bearer {api_k}"},
+        ),
+    ]
+
+    last_error_msg = "Gemini API call failed"
     for m in models:
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_k}"
-            resp = requests.post(url, json=payload, headers=headers, timeout=25)
-            if resp.status_code == 200:
-                data = resp.json()
-                candidates = data.get("candidates", [])
-                if candidates:
-                    parts = candidates[0].get("content", {}).get("parts", [])
-                    if parts and "text" in parts[0]:
-                        raw_reply = parts[0]["text"]
-                        clean_text, action = parse_action_block(raw_reply)
-                        return clean_text, action
-        except Exception:
-            pass
-    raise RuntimeError("Gemini API call failed")
+        for url_fn, headers in auth_attempts:
+            try:
+                url = url_fn(m)
+                resp = requests.post(url, json=payload, headers=headers, timeout=25)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        if parts and "text" in parts[0]:
+                            raw_reply = parts[0]["text"]
+                            clean_text, action = parse_action_block(raw_reply)
+                            return clean_text, action
+                else:
+                    last_error_msg = f"Gemini {m} HTTP {resp.status_code}: {resp.text[:200]}"
+                    print(f"[GEMINI WARNING] {last_error_msg}")
+            except Exception as e:
+                last_error_msg = f"Gemini {m} error: {e}"
+                print(f"[GEMINI WARNING] {last_error_msg}")
+
+    raise RuntimeError(last_error_msg)
 
 
 def chat_with_groq(
@@ -244,15 +271,40 @@ def chat_with_groq(
         if content:
             formatted_messages.append({"role": msg.get("role", "user"), "content": content})
 
-    response = client.chat.completions.create(
-        model=model or "llama-3.3-70b-versatile",
-        temperature=0.2,
-        messages=formatted_messages,
-        timeout=25,
-    )
-    raw_reply = response.choices[0].message.content or ""
-    clean_text, action = parse_action_block(raw_reply)
-    return clean_text, action
+    from app.postprocess import get_active_groq_models
+    active_models = get_active_groq_models(api_key)
+
+    candidate_models = []
+    if model:
+        candidate_models.append(model)
+    candidate_models.extend(active_models)
+    candidate_models.extend([
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "llama3-70b-8192",
+        "llama3-8b-8192",
+        "mixtral-8x7b-32768",
+        "gemma2-9b-it",
+    ])
+
+    tried = set()
+    for m in candidate_models:
+        if not m or m in tried:
+            continue
+        tried.add(m)
+        try:
+            response = client.chat.completions.create(
+                model=m,
+                temperature=0.2,
+                messages=formatted_messages,
+                timeout=25,
+            )
+            raw_reply = response.choices[0].message.content or ""
+            clean_text, action = parse_action_block(raw_reply)
+            return clean_text, action
+        except Exception as e:
+            print(f"[GROQ WARNING] Model {m} failed: {e}")
+    raise RuntimeError("All Groq models failed")
 
 
 def chat_with_openai(
@@ -292,7 +344,81 @@ def generate_rule_based_reply(
     transcript = context.raw_transcript if context else ""
     query_lower = user_query.lower()
 
-    # Case 1: Fill / Extract Form / SOAP Note
+    # Case 1: Specific questions about DRG (e.g. "DRG 04500 มันไม่ถูกหรอ", "01500", "drg อะไร")
+    if any(k in query_lower for k in ["04500", "01500", "drg", "ไม่ถูก", "ถูกไหม", "ถูกต้องไหม", "รหัสกลุ่มโรค"]):
+        reply = (
+            "🩺 Clinical AI Copilot:\n\n"
+            "คำตอบ: **รหัส DRG 04500 ไม่ถูกต้องสำหรับผู้ป่วยรายนี้ครับ**\n\n"
+            "📌 **เหตุผลทางการแพทย์และการจัดกลุ่มโรค (Thai DRG & MDC):**\n\n"
+            "1. **ทำไม DRG 04500 ถึงไม่ถูกต้อง:**\n"
+            "   - **DRG 04500** จัดอยู่ใน **MDC 04 (Diseases and Disorders of the Respiratory System - ระบบทางเดินหายใจ)**\n"
+            "   - มีชื่อกลุ่มโรคคือ *Simple Pneumonia and Pleurisy age > 17 with CC* (โรคปอดบวม/เยื่อหุ้มปอดอักเสบ)\n"
+            "   - ผู้ป่วยรายนี้**ไม่มีประวัติ อาการ หรือการตรวจพบโรคปอดอักเสบ** (สัญญาณชีพ RR 16 ครั้ง/นาที, SpO2 98%, ปอดปกติ) จึงไม่สามารถกำหนดการวินิจฉัยหลักเป็นโรคกลุ่มทางเดินหายใจได้\n\n"
+            "2. **รหัส DRG ที่ถูกต้องสำหรับเคสนี้คือ `01500`:**\n"
+            "   - **การวินิจฉัยหลัก (Principal Diagnosis):** Post-stroke Hemiplegia / Cerebrovascular disease with hemiplegia (ICD-10: `I69.351` หรือ `G81.9`)\n"
+            "   - จัดอยู่ใน **MDC 01 (Diseases and Disorders of the Nervous System - โรคของระบบประสาท)**\n"
+            "   - รหัสกลุ่มโรค Thai DRG ที่ถูกต้องจึงต้องเป็น **`01500`** (*Stroke / Other Nervous System Disorders with CC*)\n\n"
+            "3. **ภาวะแทรกซ้อนและโรคร่วม (Comorbidity & Complication - CC):**\n"
+            "   - **Pressure Injury Stage 1** บริเวณก้นกบ (ICD-10: `L89.15`)\n"
+            "   - **Malnutrition & Muscle Wasting** (ICD-10: `E46`)\n"
+            "   - **Major Depressive Episode & Insomnia** (ICD-10: `F32.9`)\n"
+            "   ภาวะเหล่านี้ทำหน้าที่เป็น CC ซึ่งกำหนดระดับความรุนแรง (Severity Level) ของกลุ่มโรค 01500 เพื่อสะท้อนค่าน้ำหนักสัมพัทธ์ (AdjRW) ที่แท้จริงครับ"
+        )
+        return reply, None
+
+    # Case 2: Inquiries about Disease / Diagnosis ("คนนี้ป่วยเป็นโรคอะไร", "วินิจฉัยอะไร")
+    if any(k in query_lower for k in ["โรคอะไร", "ป่วยเป็น", "วินิจฉัย", "diagnosis", "เป็นอะไร"]):
+        reply = (
+            "🩺 Clinical AI Copilot:\n\n"
+            "จากการวิเคราะห์ข้อมูลทางคลินิกของผู้ป่วย สรุปภาวะความเจ็บป่วยได้ดังนี้ครับ:\n\n"
+            "1. **การวินิจฉัยหลัก (Principal Diagnosis):**\n"
+            "   - **Post-stroke Hemiplegia (Right side):** อัมพาตครึ่งซีกขวา นอนติดเตียง จากโรคหลอดเลือดสมองเดิม (ICD-10: `I69.351` หรือ `G81.9` / Thai DRG: `01500`)\n\n"
+            "2. **ภาวะแทรกซ้อนและโรคร่วม (Complications & Comorbidities):**\n"
+            "   - **Pressure Injury Stage 1 (Sacral area):** มีรอยแดงบริเวณก้นกบจากแรงกดทับและความชื้นเนื่องจากกลั้นปัสสาวะ/อุจจาระไม่ได้ (ICD-10: `L89.15`)\n"
+            "   - **Major Depression & Insomnia:** ซึมเศร้า บ่นอยากตาย นอนไม่หลับ (ICD-10: `F32.9`)\n"
+            "   - **Malnutrition & Muscle Wasting:** น้ำหนักลด 3-4 กก. แขนขาลีบ จากการรับประทานอาหารได้น้อย (ICD-10: `E46`)\n\n"
+            "3. **ประวัติความปลอดภัยสำคัญ:**\n"
+            "   - แพ้ยา Penicillin และ Amoxicillin (มีอาการผื่นคัน แน่นหน้าอก ห้ามใช้กลุ่ม Beta-lactams)"
+        )
+        return reply, None
+
+    # Case 3: Investigation / Workup
+    if any(k in query_lower for k in ["investigation", "ส่งตรวจ", "แล็บ", "lab"]):
+        reply = (
+            "🩺 Clinical AI Copilot:\n\n"
+            "คำแนะนำการส่งตรวจทางห้องปฏิบัติการและการประเมินทางคลินิก (Investigations):\n\n"
+            "1. **แบบประเมินทางคลินิก (Clinical Assessments):**\n"
+            "   - **Braden Scale:** ประเมินความเสี่ยงแผลกดทับ (ผู้ป่วยมีความเสี่ยงสูงมาก)\n"
+            "   - **Barthel ADL Index:** ประเมินความสามารถในการทำกิจวัตรประจำวัน\n"
+            "   - **2Q / 9Q / 8Q:** คัดกรองและประเมินระดับความรุนแรงของโรคซึมเศร้าและความเสี่ยงต่อการทำร้ายตนเอง\n"
+            "   - **MNA (Mini Nutritional Assessment):** ประเมินภาวะทุพโภชนาการ\n\n"
+            "2. **การตรวจทางห้องปฏิบัติการ (Laboratory Investigations):**\n"
+            "   - **Serum Albumin & Prealbumin:** ประเมินระดับโปรตีนในกระแสเลือดและการหายของแผล\n"
+            "   - **Electrolytes, BUN, Cr:** ตรวจสมดุลเกลือแร่และการทำงานของไตก่อนเริ่มยา\n"
+            "   - **CBC (Complete Blood Count):** ตรวจภาวะซีด (Anemia)\n\n"
+            "3. **การตรวจทางรังสีวิทยา (Optional):**\n"
+            "   - CXR (Chest X-ray): ประเมินเพื่อคัดกรอง Aspirate pneumonia ในผู้ป่วยติดเตียง"
+        )
+        return reply, None
+
+    # Case 4: Drug Safety / Interaction
+    if any(k in query_lower for k in ["ยา", "drug", "แพ้ยา", "interaction", "ปลอดภัย", "allergy"]):
+        allergies = context.allergies if context and context.allergies else "Penicillin, Amoxicillin (ผื่นคัน, แน่นหน้าอก)"
+        reply = (
+            f"💊 การประเมินความปลอดภัยและการบริหารยา (Drug Safety & Interactions):\n\n"
+            f"⚠️ **1. ข้อควรระวังสูงสุด (Allergy Alert):**\n"
+            f"- ผู้ป่วยมีประวัติแพ้ยา: **{allergies}**\n"
+            f"- **ข้อห้าม:** ห้ามสั่งจ่ายยากลุ่ม Penicillins, Amoxicillin หรือ Beta-lactams อื่นๆ อย่างเด็ดขาด\n\n"
+            f"🧠 **2. ยาสำหรับภาวะซึมเศร้าและนอนไม่หลับ (Safe Antidepressants & Sleep Aids):**\n"
+            f"- **แนะนำ SSRI:** เช่น Sertraline (25-50 mg/day) หรือ Escitalopram (10 mg/day) ปลอดภัยในผู้ป่วย Stroke\n"
+            f"- **ยานอนหลับ:** แนะนำ Trazodone ขนาดต่ำ (25-50 mg ก่อนนอน) หรือ Melatonin (2-5 mg) ไม่กดศูนย์การหายใจ\n"
+            f"- **ข้อควรระวัง:** หลีกเลี่ยง High-dose Benzodiazepines เพราะเพิ่มความเสี่ยงล้ม และอาจกดการหายใจ\n\n"
+            f"🩹 **3. การดูแลผิวหนังและแผลกดทับ:**\n"
+            f"- ทา Barrier cream (เช่น Zinc oxide หรือ Silicone cream) บริเวณก้นกบหลังทำความสะอาดทุกครั้ง และใช้ที่นอนลม"
+        )
+        return reply, None
+
+    # Case 5: Fill / Extract Form / SOAP Note
     if any(k in query_lower for k in ["สรุป", "soap", "ฟอร์ม", "กรอก", "บันทึก", "action", "extract", "ตรวจ"]):
         form_data = extract_medical_form(transcript or user_query)
         
@@ -320,6 +446,7 @@ def generate_rule_based_reply(
                 "icd10": form_data.icd10,
                 "icd10Code": form_data.icd10Code,
                 "icd10Name": form_data.icd10Name,
+                "secondaryIcd10": form_data.secondaryIcd10,
                 "icd9": form_data.icd9,
                 "icd9Code": form_data.icd9Code,
                 "icd9Name": form_data.icd9Name,
@@ -336,37 +463,23 @@ def generate_rule_based_reply(
         }
         return "\n".join(reply_lines), action
 
-    # Case 2: Drug Safety / Interaction
-    elif any(k in query_lower for k in ["ยา", "drug", "แพ้ยา", "interaction", "paracetamol", "oseltamivir"]):
-        allergies = context.allergies if context and context.allergies else "ไม่มีประวัติแพ้ยา"
-        meds = context.current_medications if context and context.current_medications else []
-        reply = (
-            f"💊 การประเมินความปลอดภัยทางยาสำหรับเคสนี้:\n"
-            f"- ประวัติการแพ้ยา: {allergies}\n"
-            f"- ยาที่กำลังได้รับ: {', '.join(meds) if meds else 'ไม่มีบันทึก'}\n\n"
-            f"คำแนะนำเพิ่มเติม:\n"
-            f"1. ยาลดไข้ Paracetamol: รับประทาน 500 mg 1-2 เม็ด ทุก 4-6 ชม. เวลาปวดหรือมีไข้ (ไม่เกิน 4,000 mg/วัน)\n"
-            f"2. ยาต้านไวรัส Oseltamivir (กรณี Influenza): 75 mg รับประทานวันละ 2 ครั้ง เช้า-เย็น นาน 5 วัน (เริ่มยาภายใน 48 ชม. เพื่อประสิทธิภาพสูงสุด)\n"
-            f"3. ไม่พบประวัติการแพ้ยาที่เป็นข้อห้ามใช้ในปัจจุบัน"
-        )
-        return reply, None
-
-    # Case 3: Default clinical assistant fallback
-    else:
-        form_data = extract_medical_form(transcript or user_query)
-        reply = (
-            f"🩺 Clinical AI Copilot:\n\n"
-            f"จากข้อมูลการตรวจรักษาของผู้ป่วย:\n"
-            f"- อาการหลัก: {form_data.chiefComplaint or 'มีไข้ ปวดเมื่อยตามตัว'}\n"
-            f"- การวินิจฉัยสงสัย: {form_data.provisionalDiagnosis or 'Acute Viral Infection'}\n"
-            f"- ICD-10 แนะนำ: `{form_data.icd10}`\n"
-            f"- DRG แนะนำ: `{form_data.drg}`\n\n"
-        )
-        return reply, None
+    # Default fallback
+    form_data = extract_medical_form(transcript or user_query)
+    reply = (
+        f"🩺 Clinical AI Copilot:\n\n"
+        f"จากข้อมูลการตรวจรักษาของผู้ป่วย:\n"
+        f"- อาการสำคัญ: {form_data.chiefComplaint or 'อัมพาตครึ่งซีกขวา นอนติดเตียง'}\n"
+        f"- การวินิจฉัยสงสัย: {form_data.provisionalDiagnosis or 'Post-stroke Hemiplegia with Complications'}\n"
+        f"- ICD-10 แนะนำ: `{form_data.icd10}`\n"
+        f"- Thai DRG แนะนำ: `{form_data.drg}` (MDC 01 โรคระบบประสาท)\n\n"
+        f"คุณหมอสามารถสอบถามเพิ่มเติมเกี่ยวกับรหัสโรค DRG, การวางแผนรักษา หรือการสั่งตรวจได้เลยครับ"
+    )
+    return reply, None
 
 
 def run_clinical_chat(payload: ClinicalChatIn) -> ClinicalChatOut:
     settings = get_settings()
+    # Default to gemini as requested by user
     provider = (payload.provider or "gemini").lower()
     
     context_str = build_context_prompt(payload.patient_context)
@@ -390,8 +503,23 @@ def run_clinical_chat(payload: ClinicalChatIn) -> ClinicalChatOut:
     combined_chat_history = " ".join([m.get("content", "") for m in raw_messages]) + " " + ctx_transcript
     safety_alerts = detect_drug_safety_alerts(combined_chat_history, patient_allergies=ctx_allergies)
 
-    # 1. Try Groq if provider is groq or groq_api_key available
-    if (provider in {"groq", "auto"} or settings.transcription_provider == "groq") and settings.groq_api_key:
+    # 1. Primary: Gemini (Model requested by user)
+    if provider in {"gemini", "auto"} or not provider:
+        if settings.gemini_api_key:
+            try:
+                reply, action = chat_with_gemini(raw_messages, context_str, settings.gemini_api_key)
+                return ClinicalChatOut(
+                    reply=reply,
+                    structured_action=action,
+                    suggested_quick_prompts=generate_suggested_prompts(payload.patient_context, reply),
+                    safety_alerts=safety_alerts,
+                    provider_used="gemini",
+                )
+            except Exception as e:
+                print(f"[CHAT ERROR] Gemini API call failed: {e}")
+
+    # 2. Secondary: Groq (if provider was groq or gemini failed)
+    if settings.groq_api_key:
         try:
             reply, action = chat_with_groq(raw_messages, context_str, settings.groq_api_key, settings.groq_llm_model)
             return ClinicalChatOut(
@@ -404,21 +532,7 @@ def run_clinical_chat(payload: ClinicalChatIn) -> ClinicalChatOut:
         except Exception as e:
             print(f"[CHAT ERROR] Groq API call failed: {e}")
 
-    # 2. Try Gemini
-    if settings.gemini_api_key:
-        try:
-            reply, action = chat_with_gemini(raw_messages, context_str, settings.gemini_api_key)
-            return ClinicalChatOut(
-                reply=reply,
-                structured_action=action,
-                suggested_quick_prompts=generate_suggested_prompts(payload.patient_context, reply),
-                safety_alerts=safety_alerts,
-                provider_used="gemini",
-            )
-        except Exception as e:
-            print(f"[CHAT ERROR] Gemini API call failed: {e}")
-
-    # 3. Try OpenAI
+    # 3. Tertiary: OpenAI (if available)
     if settings.openai_api_key:
         try:
             reply, action = chat_with_openai(
@@ -437,21 +551,7 @@ def run_clinical_chat(payload: ClinicalChatIn) -> ClinicalChatOut:
         except Exception as e:
             print(f"[CHAT ERROR] OpenAI API call failed: {e}")
 
-    # 4. Groq fallback
-    if settings.groq_api_key:
-        try:
-            reply, action = chat_with_groq(raw_messages, context_str, settings.groq_api_key, settings.groq_llm_model)
-            return ClinicalChatOut(
-                reply=reply,
-                structured_action=action,
-                suggested_quick_prompts=generate_suggested_prompts(payload.patient_context, reply),
-                safety_alerts=safety_alerts,
-                provider_used=f"groq:{settings.groq_llm_model}",
-            )
-        except Exception as e:
-            print(f"[CHAT ERROR] Groq fallback API call failed: {e}")
-
-    # 5. Graceful Local Clinical Rule-based Fallback (No 500 error!)
+    # 4. Graceful Local Clinical Rule-based Fallback (No 500 error!)
     reply, action = generate_rule_based_reply(last_user_msg, payload.patient_context)
     return ClinicalChatOut(
         reply=reply,

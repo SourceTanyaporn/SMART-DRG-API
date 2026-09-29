@@ -143,7 +143,9 @@ def run_whisperx_pipeline(
         torch.set_num_threads(max(2, cpu_cores // 2))
 
     resolved_beam = beam_size or settings.default_beam_size
-    resolved_prompt = initial_prompt or settings.initial_prompt
+    raw_prompt = (initial_prompt or settings.initial_prompt or "").strip()
+    encoded = raw_prompt.encode("utf-8")
+    resolved_prompt = (encoded[:750].decode("utf-8", errors="ignore") if len(encoded) > 750 else raw_prompt) or None
     resolved_vad = vad_filter if vad_filter is not None else settings.default_vad_filter
 
     def do_whisper_transcribe():

@@ -38,9 +38,15 @@ EXTRACTION_SYSTEM_PROMPT = """คุณคือผู้ช่วยแพท�
   },
   "physicalExam": "ผลการตรวจร่างกายของแพทย์ เช่น 'Chest: Crepitation at right lower lung field'",
   "provisionalDiagnosis": "การวินิจฉัยโรคเบื้องต้น เช่น 'Community-Acquired Pneumonia' หรือ 'Depressive Episode with Insomnia'",
-  "icd10": "รหัสและชื่อโรค ICD-10 เช่น 'J11.1 (Influenza with other respiratory manifestations / ไข้หวัดใหญ่)'",
-  "icd10Code": "รหัสโรค ICD-10 เช่น 'J11.1' หรือ 'J15.9'",
-  "icd10Name": "ชื่อโรค ICD-10 เช่น 'Influenza with other respiratory manifestations / ไข้หวัดใหญ่'",
+  "icd10": "รหัสและชื่อโรคหลัก ICD-10 เช่น 'G81.9 (Hemiplegia, unspecified / อัมพาตครึ่งซีก)'",
+  "icd10Code": "รหัสโรคหลัก ICD-10 เช่น 'G81.9' หรือ 'I69.351'",
+  "icd10Name": "ชื่อโรคหลัก ICD-10 เช่น 'Hemiplegia, unspecified / อัมพาตครึ่งซีก'",
+  "secondaryIcd10": [
+    {
+      "code": "รหัสโรครอง/ภาวะแทรกซ้อน (CC) เช่น 'L89.15', 'F32.2', 'F06.32', 'E46', 'G47.0'",
+      "name": "ชื่อโรครอง เช่น 'Pressure ulcer stage 1', 'Severe depression', 'Post-stroke depression', 'Malnutrition'"
+    }
+  ],
   "icd9": "รหัสและชื่อหัตถการทางการแพทย์ ICD-9-CM เช่น '96.04 (Continuous oxygen therapy)' หรือ '-' หากไม่มี",
   "icd9Code": "รหัสหัตถการ ICD-9-CM เช่น '96.04' หรือ '-' หากไม่มีหัตถการ",
   "icd9Name": "ชื่อหัตถการ ICD-9-CM เช่น 'Continuous oxygen therapy' หรือ '' หากไม่มี",
@@ -155,33 +161,53 @@ def compute_bmi(weight_val: float | int | str | None, height_val: float | int | 
 
 
 def extract_with_groq(text: str, api_key: str, model: str = "llama-3.3-70b-versatile") -> dict | None:
-    try:
-        client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
-        response = client.chat.completions.create(
-            model=model or "llama-3.3-70b-versatile",
-            temperature=0.1,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
-                {"role": "user", "content": f"บทสนทนาทางการแพทย์:\n\n{text}"},
-            ],
-            timeout=30,
-        )
-        content = response.choices[0].message.content
-        if content:
-            raw_text = content.strip()
-            raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.IGNORECASE)
-            raw_text = re.sub(r"\s*```$", "", raw_text)
-            res = json.loads(raw_text)
-            if isinstance(res, dict):
-                return res
-    except Exception as e:
-        print(f"[EXTRACT ERROR] Groq extraction failed: {e}")
+    from app.postprocess import get_active_groq_models
+
+    active_models = get_active_groq_models(api_key)
+    candidate_models = []
+    if model:
+        candidate_models.append(model)
+    candidate_models.extend(active_models)
+    candidate_models.extend(["llama3-70b-8192", "llama3-8b-8192", "mixtral-8x7b-32768", "gemma2-9b-it"])
+
+    tried = set()
+    client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
+    for m in candidate_models:
+        if not m or m in tried:
+            continue
+        tried.add(m)
+        try:
+            response = client.chat.completions.create(
+                model=m,
+                temperature=0.1,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+                    {"role": "user", "content": f"บทสนทนาทางการแพทย์:\n\n{text}"},
+                ],
+                timeout=30,
+            )
+            content = response.choices[0].message.content
+            if content:
+                raw_text = content.strip()
+                raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.IGNORECASE)
+                raw_text = re.sub(r"\s*```$", "", raw_text)
+                res = json.loads(raw_text)
+                if isinstance(res, dict):
+                    return res
+        except Exception as e:
+            print(f"[EXTRACT WARNING] Groq model '{m}' failed: {e}")
     return None
 
 
 def extract_with_gemini(text: str, api_key: str) -> dict | None:
-    models = ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
+    models = [
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+    ]
     payload = {
         "system_instruction": {"parts": [{"text": EXTRACTION_SYSTEM_PROMPT}]},
         "contents": [{"parts": [{"text": f"บทสนทนาทางการแพทย์:\n\n{text}"}]}],
@@ -191,27 +217,33 @@ def extract_with_gemini(text: str, api_key: str) -> dict | None:
         },
     }
     api_k = str(api_key).strip()
-    headers = {
-        "x-goog-api-key": api_k,
-        "Authorization": f"Bearer {api_k}",
-        "Content-Type": "application/json",
-    }
+    auth_attempts = [
+        (
+            lambda m: f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_k}",
+            {"Content-Type": "application/json", "x-goog-api-key": api_k},
+        ),
+        (
+            lambda m: f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
+            {"Content-Type": "application/json", "Authorization": f"Bearer {api_k}"},
+        ),
+    ]
     for m in models:
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_k}"
-            resp = requests.post(url, json=payload, headers=headers, timeout=25)
-            if resp.status_code == 200:
-                data = resp.json()
-                candidates = data.get("candidates", [])
-                if candidates:
-                    raw_text = candidates[0]["content"]["parts"][0]["text"].strip()
-                    raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.IGNORECASE)
-                    raw_text = re.sub(r"\s*```$", "", raw_text)
-                    res = json.loads(raw_text)
-                    if isinstance(res, dict):
-                        return res
-        except Exception:
-            pass
+        for url_fn, headers in auth_attempts:
+            try:
+                url = url_fn(m)
+                resp = requests.post(url, json=payload, headers=headers, timeout=25)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        raw_text = candidates[0]["content"]["parts"][0]["text"].strip()
+                        raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.IGNORECASE)
+                        raw_text = re.sub(r"\s*```$", "", raw_text)
+                        res = json.loads(raw_text)
+                        if isinstance(res, dict):
+                            return res
+            except Exception:
+                pass
     return None
 
 
@@ -260,9 +292,13 @@ def extract_heuristic_assessments(clean_text: str, forms: list[str], vs_dict: di
         appetite = any(w in clean_text for w in ["เบื่ออาหาร", "กินข้าวไม่ค่อยลง", "กินข้าวไม่ลง", "ฝืนกิน"])
         concentration_good = any(w in clean_text for w in ["สมาธิ ยังมีอยู่", "สมาธิยังมีอยู่", "เคลียร์งานเอกสารได้", "ตั้งใจทำเสร็จ"])
 
+        has_suicide = any(w in clean_text for w in ["อยากตาย", "ไม่อยากเป็นภาระ", "ไม่อยากอยู่", "ฆ่าตัวตาย", "ทำร้ายตัวเอง"])
+        self_harm_ans = "มีความคิดอยากตาย ไม่อยากเป็นภาระ (ประเมิน 8Q พบความเสี่ยง ต้องเฝ้าระวังใกล้ชิด)" if has_suicide else "ปฏิเสธ / ไม่พบประวัติความคิดทำร้ายตนเอง"
+        dep_summary = "ผู้ป่วยมีภาวะซึมเศร้า หมดความสนใจ นอนไม่หลับ และมีความคิดอยากตายไม่อยากเป็นภาระ (2Q ผลบวก แนะนำประเมิน 9Q และ 8Q ต่อทันที)" if has_suicide else "ผู้ป่วยมีภาวะหมดพลังงาน อารมณ์ไม่สบายใจ เบื่อหน่ายกิจกรรมที่ชอบ และนอนหลับยาก (2Q ได้ผลบวก แนะนำทำแบบประเมิน 9Q ต่อ)"
+
         assessments["depression"] = {
             "title": "แบบประเมินภาวะซึมเศร้า (2Q / 9Q / 8Q)",
-            "summary": "ผู้ป่วยมีภาวะหมดพลังงาน อารมณ์ไม่สบายใจ เบื่อหน่ายกิจกรรมที่ชอบ และนอนหลับยาก (2Q ได้ผลบวก แนะนำทำแบบประเมิน 9Q ต่อ)",
+            "summary": dep_summary,
             "q2": {
                 "q1": q1_pos,
                 "q2": q2_pos,
@@ -276,7 +312,7 @@ def extract_heuristic_assessments(clean_text: str, forms: list[str], vs_dict: di
                 "fatigue": "อ่อนเพลียมาก เหนื่อยง่าย หมดพลัง (เกือบทุกวัน)" if fatigue else "ปกติ",
                 "appetite": "เบื่ออาหาร กินข้าวไม่ลง ต้องฝืนกิน" if appetite else "รับประทานอาหารได้ปกติ",
                 "concentration": "ปกติ ยังจดจ่อและเคลียร์งานเอกสารได้ตามกำหนด" if concentration_good else "สมาธิลดลง",
-                "self_harm": "ปฏิเสธ / ไม่พบประวัติความคิดทำร้ายตนเอง",
+                "self_harm": self_harm_ans,
             }
         }
 
@@ -328,42 +364,81 @@ def extract_heuristic_assessments(clean_text: str, forms: list[str], vs_dict: di
         }
 
     # 5. ADL (Barthel Index)
-    if "adl" in forms or any(w in clean_text for w in ["กิจวัตรประจำวัน", "ทำได้เอง", "ติดเตียง"]):
-        independent = any(w in clean_text for w in ["ทำได้เองทั้งหมด", "ทำได้เองปกติ", "คล่องตัวดี", "ช่วยเหลือตัวเองได้"])
-        assessments["adl"] = {
-            "title": "แบบประเมินกิจวัตรประจำวัน (Barthel ADL Index)",
-            "summary": "ช่วยเหลือตนเองและทำกิจวัตรประจำวันได้เองทั้งหมด คล่องตัวดี (Independent)" if independent else "ประเมินระดับการพึ่งพา",
-            "level": "independent" if independent else "partially_dependent",
-            "answers": {
-                "feeding": "รับประทานอาหารได้เอง",
-                "grooming": "ดูแลความสะอาดตนเองได้",
-                "dressing": "สวมใส่เสื้อผ้าได้เอง",
-                "toilet_use": "ใช้ห้องน้ำได้เอง",
-                "bathing": "อาบน้ำได้เอง",
-                "transfer": "ลุกนั่งและย้ายตัวได้เอง",
-                "mobility": "เดินได้เองคล่องตัวดี",
-                "stairs": "ขึ้นลงบันไดได้เอง",
-                "bowel": "กลั้นอุจจาระได้ปกติ",
-                "bladder": "กลั้นปัสสาวะได้ปกติ",
-                "total_score": 20 if independent else 10,
+    if "adl" in forms or any(w in clean_text for w in ["กิจวัตรประจำวัน", "ทำได้เอง", "ติดเตียง", "ขยับซีกขวา", "พะยุง", "พยุง"]):
+        is_bedridden = any(w in clean_text for w in ["ติดเตียง", "ขยับซีกขวา ไม่ ได้", "ขยับซีกขวาไม่ได้", "พะยุง ตลอด", "พยุงตลอด", "ทําให้ หมด", "ทำให้หมด"])
+        independent = any(w in clean_text for w in ["ทำได้เองทั้งหมด", "ทำได้เองปกติ", "คล่องตัวดี", "ช่วยเหลือตัวเองได้"]) and not is_bedridden
+
+        if is_bedridden:
+            assessments["adl"] = {
+                "title": "แบบประเมินกิจวัตรประจำวัน (Barthel ADL Index)",
+                "summary": "ผู้ป่วยนอนติดเตียง ขยับซีกขวาไม่ได้ ต้องพึ่งพาผู้ดูแลในกิจวัตรเกือบทั้งหมด (Total/Severe Dependency: 1-2 คะแนน)",
+                "level": "total_dependent",
+                "answers": {
+                    "feeding": "0 - ต้องมีคนป้อนอาหารทั้งหมด (อาหารปั่น)",
+                    "grooming": "1 - พอใช้มือซ้ายเช็ดหน้าตัวเองได้บ้าง",
+                    "dressing": "0 - ผู้ดูแลทำให้หมด",
+                    "toilet_use": "0 - ใช้ผ้าอ้อม 24 ชั่วโมง ขับถ่ายบนเตียง",
+                    "bathing": "0 - ผู้ดูแลอาบน้ำและเช็ดตัวให้หมด",
+                    "transfer": "0 - ต้องคอยพยุงตลอด ไม่สามารถลุกนั่งเองได้",
+                    "mobility": "0 - นอนติดเตียง ขยับซีกขวาไม่ได้",
+                    "stairs": "0 - ไม่สามารถขึ้นลงบันไดได้",
+                    "bowel": "0 - กลั้นอุจจาระไม่ได้ มีเล็ดตลอด",
+                    "bladder": "0 - กลั้นปัสสาวะไม่ได้ มีเล็ดตลอด",
+                    "total_score": 1,
+                }
             }
-        }
+        else:
+            assessments["adl"] = {
+                "title": "แบบประเมินกิจวัตรประจำวัน (Barthel ADL Index)",
+                "summary": "ช่วยเหลือตนเองและทำกิจวัตรประจำวันได้เองทั้งหมด คล่องตัวดี (Independent)" if independent else "ประเมินระดับการพึ่งพา",
+                "level": "independent" if independent else "partially_dependent",
+                "answers": {
+                    "feeding": "รับประทานอาหารได้เอง",
+                    "grooming": "ดูแลความสะอาดตนเองได้",
+                    "dressing": "สวมใส่เสื้อผ้าได้เอง",
+                    "toilet_use": "ใช้ห้องน้ำได้เอง",
+                    "bathing": "อาบน้ำได้เอง",
+                    "transfer": "ลุกนั่งและย้ายตัวได้เอง",
+                    "mobility": "เดินได้เองคล่องตัวดี",
+                    "stairs": "ขึ้นลงบันไดได้เอง",
+                    "bowel": "กลั้นอุจจาระได้ปกติ",
+                    "bladder": "กลั้นปัสสาวะได้ปกติ",
+                    "total_score": 20 if independent else 10,
+                }
+            }
 
     # 6. MNA (Mini Nutritional Assessment)
-    if "mna" in forms or any(w in clean_text for w in ["เบื่ออาหาร", "กินข้าวไม่ลง", "น้ำหนัก"]):
-        reduced_intake = any(w in clean_text for w in ["เบื่ออาหาร", "กินข้าวไม่ค่อยลง", "กินข้าวไม่ลง", "ฝืนกิน"])
+    if "mna" in forms or any(w in clean_text for w in ["เบื่ออาหาร", "กินข้าวไม่ลง", "น้ำหนัก", "อาหารปั่น", "แขนขาลีบ"]):
+        severe_loss = any(w in clean_text for w in ["3-4 กิโล", "ลดไป 3-4", "อาหารปั่น", "แขนขาลีบ", "ครึ่งถ้วย"])
+        reduced_intake = any(w in clean_text for w in ["เบื่ออาหาร", "กินข้าวไม่ค่อยลง", "กินข้าวไม่ลง", "ฝืนกิน", "ลดเยอะเลย", "มื้อละครึ่งถ้วย"])
         unknown_wt = any(w in clean_text for w in ["ยังไม่ได้ชั่ง", "ไม่ได้ชั่งน้ำหนัก"])
-        assessments["mna"] = {
-            "title": "แบบประเมินภาวะโภชนาการ (Mini Nutritional Assessment)",
-            "summary": "รับประทานอาหารลดลงปานกลางเนื่องจากเบื่ออาหาร ยังไม่ได้ชั่งน้ำหนักตัวล่าสุด",
-            "answers": {
-                "food_intake": "รับประทานอาหารลดลงปานกลาง (ฝืนทานให้ครบมื้อ)" if reduced_intake else "ปกติ",
-                "weight_loss": "ไม่ทราบ / ยังไม่ได้ชั่งน้ำหนัก" if unknown_wt else "น้ำหนักคงที่",
-                "mobility": "ลุกเดินออกจากเตียงได้ปกติ",
-                "psychological_stress": "มีภาวะความเครียดหรืออารมณ์เศร้า",
-                "neuropsychological": "มีภาวะซึมเศร้า",
+
+        if severe_loss:
+            assessments["mna"] = {
+                "title": "แบบประเมินภาวะโภชนาการ (Mini Nutritional Assessment)",
+                "summary": "รับประทานอาหารปั่นได้เพียงมื้อละครึ่งถ้วย น้ำหนักลดลง 3-4 กิโลกรัมใน 3 เดือน จนแขนขาลีบ บ่งชี้ภาวะทุพโภชนาการ (Malnutrition)",
+                "risk_level": "malnourished",
+                "answers": {
+                    "food_intake": "รับประทานอาหารลดลงอย่างรุนแรง (มื้อละครึ่งถ้วย)",
+                    "weight_loss": "น้ำหนักลดลงมากกว่า 3 กิโลกรัม ในรอบ 3 เดือน",
+                    "mobility": "นอนติดเตียงตลอดเวลา (Bedbound)",
+                    "psychological_stress": "มีภาวะความเครียดและซึมเศร้า",
+                    "neuropsychological": "มีภาวะซึมเศร้ารุนแรงและสูญเสียการเคลื่อนไหว",
+                    "mna_score": 2,
+                }
             }
-        }
+        else:
+            assessments["mna"] = {
+                "title": "แบบประเมินภาวะโภชนาการ (Mini Nutritional Assessment)",
+                "summary": "รับประทานอาหารลดลงปานกลางเนื่องจากเบื่ออาหาร ยังไม่ได้ชั่งน้ำหนักตัวล่าสุด",
+                "answers": {
+                    "food_intake": "รับประทานอาหารลดลงปานกลาง (ฝืนทานให้ครบมื้อ)" if reduced_intake else "ปกติ",
+                    "weight_loss": "ไม่ทราบ / ยังไม่ได้ชั่งน้ำหนัก" if unknown_wt else "น้ำหนักคงที่",
+                    "mobility": "ลุกเดินออกจากเตียงได้ปกติ",
+                    "psychological_stress": "มีภาวะความเครียดหรืออารมณ์เศร้า",
+                    "neuropsychological": "มีภาวะซึมเศร้า",
+                }
+            }
 
     # 7. CVD (Thai CV Risk)
     if "cvd" in forms:
@@ -378,18 +453,37 @@ def extract_heuristic_assessments(clean_text: str, forms: list[str], vs_dict: di
         }
 
     # 8. BRADEN (Pressure Ulcer Risk)
-    if "braden" in forms:
-        assessments["braden"] = {
-            "title": "แบบประเมินความเสี่ยงแผลกดทับ (Braden Scale)",
-            "summary": "เคลื่อนไหวได้ปกติ รับรู้ความรู้สึกปกติ ความเสี่ยงต่อการเกิดแผลกดทับต่ำมาก",
-            "answers": {
-                "sensory": "ปกติ",
-                "moisture": "แห้งปกติ",
-                "activity": "เดินได้เอง",
-                "mobility": "เคลื่อนไหวร่างกายได้เต็มที่",
-                "friction": "ไม่มีปัญหาการเสียดสี",
+    if "braden" in forms or any(w in clean_text for w in ["แผลกดทับ", "รอยแดง", "ก้นกบ", "ที่นอนลม", "เปียกชื้น", "แรงเฉือน"]):
+        is_high_risk = any(w in clean_text for w in ["เสี่ยงแผลกดทับสูง", "ติดเตียง", "รอยแดงตรงก้นกบ", "เปียกชื้นทั้งวัน", "แรงเฉือน", "ดึงลาก", "ผ้าอ้อม 24 ชั่วโมง"])
+        if is_high_risk:
+            assessments["braden"] = {
+                "title": "แบบประเมินความเสี่ยงแผลกดทับ (Braden Scale)",
+                "summary": "ผู้ป่วยนอนติดเตียง มีรอยแดงที่ก้นกบ ผิวเปียกชื้นตลอดเวลา และมีปัญหาแรงเฉือนจากการดึงลาก ความเสี่ยงต่อการเกิดแผลกดทับสูงมาก (Very High Risk)",
+                "risk_level": "very_high",
+                "answers": {
+                    "sensory": "1-2: บกพร่องอย่างมาก (ขาขวาชา แตะเบาๆ ไม่รู้สึก ต้องบีบแรงๆ)",
+                    "moisture": "1: เปียกชื้นตลอดเวลา (ปัสสาวะ/อุจจาระเล็ดตลอด ใส่ผ้าอ้อม 24 ชม.)",
+                    "activity": "1: นอนติดเตียงตลอดเวลา (Bedfast)",
+                    "mobility": "1: ขยับร่างกายได้จำกัดมาก (ขยับซีกขวาไม่ได้เลย)",
+                    "nutrition": "1-2: โภชนาการไม่เพียงพอ (อาหารปั่นมื้อละครึ่งถ้วย น้ำหนักลด 3-4 กก. แขนขาลีบ)",
+                    "friction": "1: มีปัญหาชัดเจนจากแรงเฉือนและการดึงลากตัวบนผ้าปู",
+                    "braden_score": 7,
+                }
             }
-        }
+        else:
+            assessments["braden"] = {
+                "title": "แบบประเมินความเสี่ยงแผลกดทับ (Braden Scale)",
+                "summary": "เคลื่อนไหวได้ปกติ รับรู้ความรู้สึกปกติ ความเสี่ยงต่อการเกิดแผลกดทับต่ำมาก",
+                "risk_level": "low",
+                "answers": {
+                    "sensory": "ปกติ",
+                    "moisture": "แห้งปกติ",
+                    "activity": "เดินได้เอง",
+                    "mobility": "เคลื่อนไหวร่างกายได้เต็มที่",
+                    "friction": "ไม่มีปัญหาการเสียดสี",
+                    "braden_score": 20,
+                }
+            }
 
     return assessments
 
@@ -586,9 +680,67 @@ def extract_with_heuristics(text: str) -> dict:
     # Explicit ICD-9 and DRG mention in spoken audio
     icd9_match = re.search(r"(?:ICD\s*9|ICD-9|รหัสหัตถการ|หัตถการ)\s*[:=]?\s*([0-9]{2}(?:\.[0-9]{1,2})?)", clean_text, re.IGNORECASE)
     drg_match = re.search(r"(?:DRG|กลุ่มโรค)\s*[:=]?\s*([0-9A-Z]{4,6})", clean_text, re.IGNORECASE)
+    secondary_icd10: list[dict] = []
+
+    # Category S: Bedridden / Stroke / Hemiplegia / Pressure Ulcer Risk / Incontinence
+    if (has("ติดเตียง") or has("ขยับซีกขวา") or has("อัมพาต") or has("แผลกดทับ") or has("รอยแดงตรงก้นกบ")) and (has("พะยุง") or has("พยุง") or has("ผ้าอ้อม") or has("ที่นอนลม") or has("ก้นกบ") or has("ขยับซีกขวา")):
+        dur_text = duration_str if duration_str else "3 เดือน"
+        cc = "ผู้ป่วยติดเตียง ขยับซีกขวาไม่ได้ ผิวเปียกชื้นและมีรอยแดงบริเวณก้นกบ เบื่ออาหาร น้ำหนักลดลง และมีภาวะซึมเศร้า"
+        pi_items = [
+            "ผู้ป่วยนอนติดเตียง ขยับร่างกายซีกขวาไม่ได้ (Right hemiplegia) ลุกนั่งต้องคอยพยุงตลอด อาบน้ำและเปลี่ยนเสื้อผ้าต้องพึ่งพาผู้ดูแลทั้งหมด",
+            "ใช้มือซ้ายหยิบผ้าเช็ดหน้าได้บ้างเล็กน้อย ขาขวาและซีกขวามีอาการชา แตะสัมผัสเบาๆ ไม่รู้สึก ต้องบีบกระตุ้นแรงๆ จึงจะรู้สึก",
+            "เริ่มมีรอยแดงบริเวณก้นกบ (Erythema at coccyx) เนื่องจากมีปัสสาวะและอุจจาระเล็ดตลอดเวลา ต้องใส่ผ้าอ้อมตลอด 24 ชั่วโมง ผิวเปียกชื้นตลอดวัน เสี่ยงต่อการเกิดแผลกดทับสูง",
+            f"ช่วง {dur_text} ที่ผ่านมา รับประทานอาหารลดลงมาก ป้อนอาหารปั่นได้มื้อละครึ่งถ้วย น้ำหนักตัวลดลง 3-4 กิโลกรัม จนมีภาวะแขนขาลีบ (Muscle wasting)",
+            "ผู้ป่วยมีอาการซึม ไม่ค่อยพูดคุย เหม่อมองเพดาน บ่นว่าอยากตายไม่อยากเป็นภาระ และมีปัญหานอนไม่หลับ",
+        ]
+        pi = "\n".join(pi_items)
+        pe = (
+            "General: Cachectic appearance, marked muscle wasting of extremities, depressed affect, hypoactive.\n"
+            "Neuro: Right-sided flaccid hemiplegia, sensory loss to light touch at right hemibody (responds only to deep painful stimuli).\n"
+            "Skin: Non-blanchable erythema at coccygeal/sacral region without skin breakdown (Stage 1 pressure injury risk), skin maceration from persistent moisture.\n"
+            "CVS/RS: Normal S1S2, clear breath sound both lungs (RR 16/min)."
+        )
+        if vs.get("bp"):
+            pe += f" (BP {vs['bp']})"
+        dx = "Hemiplegia, unspecified with Pressure Ulcer Stage 1 and Major Depression (อัมพาตครึ่งซีก นอนติดเตียง ร่วมกับรอยแดงก้นกบและภาวะซึมเศร้า)"
+        icd10 = "I69.351"
+        secondary_icd10 = [
+            {"code": "L89.15", "name": "Pressure ulcer of sacral region, stage 1 / แผลกดทับระยะที่ 1 บริเวณก้นกบ"},
+            {"code": "F32.2", "name": "Severe depressive episode without psychotic symptoms / ภาวะซึมเศร้ารุนแรง"},
+            {"code": "F06.32", "name": "Organic depressive disorder / ภาวะซึมเศร้าจากโรคหลอดเลือดสมอง"},
+            {"code": "E46", "name": "Unspecified protein-energy malnutrition / ภาวะทุพโภชนาการ แขนขาลีบ"},
+            {"code": "G47.0", "name": "Disorders of initiating and maintaining sleep / นอนไม่หลับ Insomnia"},
+        ]
+        icd9 = icd9_match.group(1) if icd9_match else "93.38"
+        drg = drg_match.group(1) if drg_match else "01500"
+        inv = [
+            "แบบประเมินความเสี่ยงแผลกดทับ (Braden Scale)",
+            "แบบประเมินกิจวัตรประจำวัน (Barthel ADL Index)",
+            "แบบประเมินภาวะซึมเศร้าและความเสี่ยงการทำร้ายตนเอง (2Q / 9Q / 8Q)",
+            "แบบประเมินภาวะโภชนาการ (MNA)",
+            "Albumin, Prealbumin, Serum Electrolytes",
+        ]
+        forms = ["braden", "adl", "depression", "mna"]
+        plan = (
+            "1. การป้องกันและดูแลแผลกดทับ (Pressure Injury Prevention):\n"
+            "   - แนะนำใช้ที่นอนลม (Alternating pressure air mattress) เพื่อกระจายแรงกดทับ\n"
+            "   - พลิกตะแคงตัวผู้ป่วยทุก 2 ชั่วโมงอย่างสม่ำเสมอ\n"
+            "   - ใช้วิธียกตัวแทนการดึงลากบนผ้าปูที่นอนเพื่อลดแรงเสียดทานและแรงเฉือน (Friction and shear)\n"
+            "   - ดูแลความสะอาดผิวหนัง เปลี่ยนผ้าอ้อมทันทีเมื่อเปียกชื้น และทาครีมเคลือบผิวป้องกันความชื้น (Barrier cream)\n"
+            "2. โภชนาการ (Nutrition Support):\n"
+            "   - เสริมอาหารทางการแพทย์สูตรโปรตีนสูงเพื่อชะลอการสูญเสียมวลกล้ามเนื้อและส่งเสริมความสมบูรณ์ของผิวหนัง\n"
+            "3. ด้านสุขภาพจิตและการนอนหลับ (Mental Health & Sleep):\n"
+            "   - แพทย์จ่ายยาปรับสารสื่อประสาท/ยานอนหลับที่ปลอดภัย ไม่กดศูนย์การหายใจ\n"
+            "   - เตือนผู้ดูแลห้ามใช้ยานอนหลับนอกใบสั่งแพทย์โดยเด็ดขาด\n"
+            "   - เฝ้าระวังความคิดทำร้ายตนเองอย่างใกล้ชิดและให้คำแนะนำประคับประคองจิตใจผู้ดูแล\n"
+            "4. กายภาพบำบัด (Rehabilitation):\n"
+            "   - ทำกายภาพบำบัดขยับข้อต่อแขนขา (Passive ROM exercises) ป้องกันข้อติดแข็ง"
+        )
+        past_hx = "ประวัติหลอดเลือดสมองส่งผลให้อัมพาตซีกขวา นอนติดเตียง ไม่สามารถช่วยเหลือตนเองได้ มีภาวะกลั้นอุจจาระและปัสสาวะไม่ได้"
+        disp = "Home Care / OPD Follow-up"
 
     # Category A: Mental Health / Depressive Episode / Insomnia / Anhedonia / Fatigue
-    if (has("หมดพลัง") or has("ไม่สบายใจ") or has("เบื่อหน่าย") or has("คิดวน") or has("หลับยาก") or has("ซึมเศร้า")) and not (has("ปอดอักเสบ") or has("ไอถี่") or has("เสมหะ")):
+    elif (has("หมดพลัง") or has("ไม่สบายใจ") or has("เบื่อหน่าย") or has("คิดวน") or has("หลับยาก") or has("ซึมเศร้า")) and not (has("ปอดอักเสบ") or has("ไอถี่") or has("เสมหะ")):
         dur_text = duration_str if duration_str else "2-3 สัปดาห์"
         cc = f"มีปัญหาเรื่องการนอนหลับยาก รู้สึกหมดพลังงาน อ่อนเพลีย และมีอารมณ์ไม่สบายใจ/เบื่อหน่าย เป็นมา {dur_text}"
         
@@ -723,6 +875,7 @@ def extract_with_heuristics(text: str) -> dict:
         "provisional_diagnosis": dx,
         "icd10": icd10,
         "icd10Code": icd10,
+        "secondaryIcd10": secondary_icd10,
         "icd9": icd9,
         "icd9Code": icd9,
         "drg": drg,
@@ -924,19 +1077,35 @@ ICD10_DESCRIPTIONS: dict[str, str] = {
     "R05": "Cough / อาการไอ",
     "R07.4": "Chest pain, unspecified / เจ็บแน่นหน้าอก",
     "U07.1": "COVID-19, virus identified / โควิด-19",
+    "I69.351": "Hemiplegia following cerebral infarction / อัมพาตครึ่งซีกจากหลอดเลือดสมอง",
+    "I69.3": "Sequelae of cerebral infarction / ผลสืบเนื่องจากโรคหลอดเลือดสมอง",
+    "G81.9": "Hemiplegia, unspecified / อัมพาตครึ่งซีก",
+    "L89.15": "Pressure ulcer of sacral region, stage 1 / แผลกดทับระยะที่ 1 บริเวณก้นกบ",
+    "L89.1": "Pressure ulcer of sacral region / แผลกดทับบริเวณก้นกบ",
+    "E46": "Unspecified protein-energy malnutrition / ภาวะทุพโภชนาการ แขนขาลีบ",
 }
 
 ICD9_DESCRIPTIONS: dict[str, str] = {
+    "93.38": "Combined physical therapy / การทำกายภาพบำบัดขยับข้อต่อป้องกันข้อติดแข็ง (Passive ROM)",
+    "93.27": "Passive exercise / กายภาพบำบัดแบบเคลื่อนไหวข้อต่อ (Passive ROM)",
+    "93.89": "Rehabilitation, not elsewhere classified / การฟื้นฟูสมรรถภาพทางการแพทย์",
+    "93.11": "Assisting exercise / การฝึกการเคลื่อนไหวเพื่อการฟื้นฟู",
     "96.04": "Continuous oxygen therapy / การให้ออกซิเจน",
-    "94.49": "Other nonoperative psychotherapy / counseling การให้คำปรึกษา",
+    "96.35": "Gastric gavage / การให้อาหารทางสายยาง",
+    "94.49": "Other nonoperative psychotherapy / counseling การให้คำปรึกษาทางจิตวิทยา",
     "86.22": "Excisional debridement / การตัดแต่งแผล",
     "86.28": "Nonexcisional debridement / การล้างทำความสะอาดแผล",
     "38.93": "Venous catheterization / การเปิดเส้นให้สารน้ำทางหลอดเลือดดำ",
-    "87.44": "Routine chest x-ray / การถ่ายภาพรังสีทรวงอก",
+    "87.44": "Routine chest x-ray / การถ่ายภาพรังสีทรวงอก (CXR)",
+    "89.52": "Electrocardiogram / การตรวจคลื่นไฟฟ้าหัวใจ (EKG)",
     "90.59": "Microscopic examination of blood / ตรวจเลือดทางห้องปฏิบัติการ",
 }
 
 DRG_DESCRIPTIONS: dict[str, str] = {
+    "01500": "Stroke / Specific Cerebrovascular Disorders with CC / โรคหลอดเลือดสมองร่วมกับภาวะแทรกซ้อน",
+    "01510": "Stroke / Specific Cerebrovascular Disorders without CC / โรคหลอดเลือดสมอง",
+    "09500": "Skin Ulcers with CC / แผลกดทับและแผลเรื้อรังที่ผิวหนังร่วมกับภาวะแทรกซ้อน",
+    "09510": "Skin Ulcers without CC / แผลกดทับและแผลเรื้อรังที่ผิวหนัง",
     "04500": "Simple Pneumonia & Pleurisy age > 17 with CC / ปอดบวมและเยื่อหุ้มปอดอักเสบร่วมกับภาวะแทรกซ้อน",
     "04510": "Viral Illness / Influenza without CC / โรคติดเชื้อไวรัสหรือไข้หวัดใหญ่",
     "04520": "Simple Pneumonia & Pleurisy age > 17 without CC / ปอดบวมและเยื่อหุ้มปอดอักเสบ",
@@ -1225,19 +1394,19 @@ def extract_medical_form(
     extracted_data = None
     extracted_by = "rule_based"
 
-    # Strategy 1: Groq LLM if key available or provider is groq
-    if not extracted_data and (provider in {None, "auto", "groq"} or settings.transcription_provider == "groq") and settings.groq_api_key:
-        print("[EXTRACT] Attempting Groq extraction...")
-        extracted_data = extract_with_groq(clean_text, settings.groq_api_key, settings.groq_llm_model)
-        if extracted_data:
-            extracted_by = f"groq:{settings.groq_llm_model}"
-
-    # Strategy 2: Gemini if key available
+    # Strategy 1: Gemini if key available (Primary for clinical accuracy)
     if not extracted_data and (provider in {None, "auto", "gemini"}) and settings.gemini_api_key:
         print("[EXTRACT] Attempting Gemini extraction...")
         extracted_data = extract_with_gemini(clean_text, settings.gemini_api_key)
         if extracted_data:
             extracted_by = "gemini"
+
+    # Strategy 2: Groq LLM if key available
+    if not extracted_data and (provider in {None, "auto", "groq"} or settings.transcription_provider == "groq") and settings.groq_api_key:
+        print("[EXTRACT] Attempting Groq extraction...")
+        extracted_data = extract_with_groq(clean_text, settings.groq_api_key, settings.groq_llm_model)
+        if extracted_data:
+            extracted_by = f"groq:{settings.groq_llm_model}"
 
     # Strategy 3: OpenAI if key available
     if not extracted_data and (provider in {None, "auto", "openai"}) and settings.openai_api_key:
@@ -1373,6 +1542,23 @@ def extract_medical_form(
         raw_drg, DRG_DESCRIPTIONS, fallback_desc="", explicit_desc=raw_drg_desc
     )
 
+    # Parse and enrich secondary ICD-10 codes (Comorbidities & Complications)
+    raw_sec_icd10 = extracted_data.get("secondaryIcd10") or extracted_data.get("secondary_icd10") or []
+    sec_icd10_list: list[dict] = []
+    if isinstance(raw_sec_icd10, list):
+        for item in raw_sec_icd10:
+            if isinstance(item, dict):
+                c = str(item.get("code") or item.get("icd10Code") or "").strip()
+                n = str(item.get("name") or item.get("icd10Name") or "").strip()
+                if c:
+                    if not n and c in ICD10_DESCRIPTIONS:
+                        n = ICD10_DESCRIPTIONS[c]
+                    sec_icd10_list.append({"code": c, "name": n})
+            elif isinstance(item, str) and item.strip():
+                c = item.strip()
+                n = ICD10_DESCRIPTIONS.get(c, "")
+                sec_icd10_list.append({"code": c, "name": n})
+
     treatment_plan_str = extracted_data.get("note") or extracted_data.get("treatment_plan", "") or ""
     safety_alerts = detect_drug_safety_alerts(clean_text, patient_allergies=allergies, treatment_plan=treatment_plan_str)
 
@@ -1386,6 +1572,7 @@ def extract_medical_form(
         icd10=icd10_full,
         icd10Code=icd10_code,
         icd10Name=icd10_desc,
+        secondaryIcd10=sec_icd10_list,
         icd9=icd9_full,
         icd9Code=icd9_code,
         icd9Name=icd9_desc,

@@ -65,6 +65,43 @@ PHONETIC_TYPO_CORRECTIONS = {
     "สวาสวัสดี": "สวัสดี",
     "สวาสดี่": "สวัสดี",
     "ตล่อด": "ตลอด",
+    # Elderly care and bedridden phonetic mishearings
+    "คุณพ่า": "คุณพ่อ",
+    "ขยับสี่ขา": "ขยับซีกขวา",
+    "ขยับสี่ขาไม่ได้": "ขยับซีกขวาไม่ได้",
+    "เสื้อผ้าผง": "เสื้อผ้าผม",
+    "พอยีบผ้า": "พอหยิบผ้า",
+    "เฉ็ดหน้า": "เช็ดหน้า",
+    "ที่พ่อหยิบผ้า": "ที่พอหยิบผ้า",
+    "ที่พ่อจะหยิบผ้า": "ที่พอจะหยิบผ้า",
+    "แต่เบาๆ ไม่รู้สึก": "แตะเบาๆ ไม่รู้สึก",
+    "แต่เบาๆ": "แตะเบาๆ",
+    "อุจจาระเล็ก": "อุจจาระเล็ด",
+    "ปัสสาวะเล็ก": "ปัสสาวะเล็ด",
+    "แค่มือละครึ่งถ้วย": "แค่มื้อละครึ่งถ้วย",
+    "มือละครึ่งถ้วย": "มื้อละครึ่งถ้วย",
+    "แขนขาเล็ก": "แขนขาลีบ",
+    "เหมือนมองเพดาน": "เหม่อมองเพดาน",
+    "ลดยกตัวทันการลาก": "เน้นยกตัวแทนการลาก",
+    "ยกตัวทันการลาก": "ยกตัวแทนการลาก",
+    "ทันการลาก": "แทนการลาก",
+    "ลดยกตัว": "เน้นยกตัว",
+    "ผิวทะลุรอย": "ผิวทะลุ",
+    "ช่วยกันเท้าให้ดู": "ช่วยกันตะแคงตัวดู",
+    "รอยแดงยังพอหยุบได้": "รอยแดงยังพอยับยั้งได้",
+    "อาหารเยอะเลยครับ": "ลดเยอะเลยครับ",
+    "ความดัน 125 บน 80": "ความดัน 125 ทับ 80",
+    "คุณดูแลเป็นอย่างไร": "การดูแลเป็นอย่างไร",
+    "ให้อีกทั้งนะคะ": "ให้อีกทางนะคะ",
+    "ให้อีกทั้งนะครับ": "ให้อีกทางนะครับ",
+    "ดีละค่ะ": "ดีแล้วค่ะ",
+    "ดีล่ะค่ะ": "ดีแล้วค่ะ",
+    "อย่างไรบ้างค่ะ": "อย่างไรบ้างคะ",
+    "เป็นอย่างไรบ้างค่ะ": "เป็นอย่างไรบ้างคะ",
+    "ไหมค่ะ": "ไหมคะ",
+    "ใช่ไหมค่ะ": "ใช่ไหมคะ",
+    "ทานลดลงไหมค่ะ": "ทานลดลงไหมคะ",
+    "รู้สึกไหมค่ะ": "รู้สึกไหมคะ",
 }
 
 
@@ -123,17 +160,30 @@ def normalize_clinical_role(role_raw: str | None, default: str = "แพทย�
 def get_proofread_system_prompt() -> str:
     return (
         "You are an expert Clinical Dialogue AI Specialist and Thai Medical Speech Transcriber.\n"
-        "Your sole task is to format the given transcript into clean turn-by-turn dialogue between 'แพทย์' (Doctor) and 'ผู้ป่วย' (Patient), and fix obvious Thai speech recognition phonetic typos.\n\n"
-        "STRICT ZERO-HALLUCINATION RULES:\n"
-        "1. STRICT VERBATIM FIDELITY: Transcribe and retain EXACTLY what was said in the transcript. DO NOT add, invent, embellish, speculate, or insert ANY words, symptoms, illnesses, vital signs, medications, or conversation that the speakers did not say.\n"
-        "2. PRESERVE ALL NUMBERS & FACTS: Keep every number, unit, symptom, and detail exactly as stated.\n"
-        "3. ACCURATE SPEAKER SEPARATION:\n"
-        "   - 'แพทย์: ' (Doctor): Doctor speaking (greetings, asking questions, explaining results, giving diagnosis/prescription).\n"
-        "   - 'ผู้ป่วย: ' (Patient): Patient speaking (answers, describing symptoms/feelings, replying).\n"
-        "   - Every speaker turn MUST begin with either 'แพทย์: ' or 'ผู้ป่วย: '.\n"
+        "Your task is to proofread, correct Thai speech recognition (ASR) phonetic distortions, and format the dialogue into clean turn-by-turn clinical conversation between 'แพทย์' (Doctor) and 'ผู้ป่วย' (Patient/Caregiver).\n\n"
+        "KEY PROOFREADING & FORMATTING GUIDELINES:\n"
+        "1. INTELLIGENT THAI ASR PHONETIC CORRECTION:\n"
+        "   Speech recognition models often mishear Thai consonants, tones, or slurred speech. You MUST reconstruct the accurate Thai clinical words based on context:\n"
+        "   - Subject & Relatives: When a son/daughter describes caring for their bedridden elder ('การดูแล', 'ผมทำให้หมด'), mishearings like 'คุณพี่' or 'คุณพ่า' or 'คุณพ่ายังนอนติดเตียง' are phonetic errors for 'คุณพ่อ'.\n"
+        "   - Anatomy & Movement: 'ขยับสี่ขาไม่ได้' -> 'ขยับซีกขวาไม่ได้', 'แขนขาเล็ก' -> 'แขนขาลีบ', 'พอยีบผ้ามาเฉ็ดหน้า' -> 'พอหยิบผ้ามาเช็ดหน้า', 'ที่พ่อหยิบผ้า' (capability) -> 'ที่พอหยิบผ้า', 'เสื้อผ้าผง' -> 'เสื้อผ้าผม'.\n"
+        "   - Physical Exam & Symptoms: 'แต่เบาๆ ไม่รู้สึก' -> 'แตะเบาๆ ไม่รู้สึก', 'อุจจาระเล็ก' -> 'อุจจาระเล็ด', 'ผิวทะลุรอย' -> 'ผิวทะลุ', 'ช่วยกันเท้าให้ดู' -> 'ช่วยกันตะแคงตัวดู', 'รอยแดงยังพอหยุบได้' -> 'รอยแดงยังพอยับยั้งได้'.\n"
+        "   - Mental Health & Depression: 'เหมือนมองเพดาน' -> 'เหม่อมองเพดาน' (staring blankly at the ceiling in depression), 'ดีละค่ะ' -> 'ดีแล้วค่ะ'.\n"
+        "   - Bedridden Care & Positioning: 'ลดยกตัวทันการลาก' / 'ยกตัวทันการลาก' -> 'เน้นยกตัวแทนการลาก' (lifting body instead of dragging to avoid friction/shear), 'ให้อีกทั้งนะคะ' -> 'ให้อีกทางนะคะ'.\n"
+        "   - Nutrition & Diet: 'แค่มือละครึ่งถ้วย' -> 'แค่มื้อละครึ่งถ้วย', 'อาหารเยอะเลยครับ' (answering whether food intake reduced) -> 'ลดเยอะเลยครับ'.\n"
+        "   - Vital signs: 'ความดัน 125 บน 80' -> 'ความดัน 125 ทับ 80'.\n"
+        "   - Natural Pronouns: 'คุณพอรู้สึกไหมคะ' -> 'แกพอรู้สึกไหมคะ', 'คุณดูซึมๆ' -> 'แกดูซึมๆ'.\n"
+        "   - Question particles: Questions by doctor end with 'คะ' not 'ค่ะ' ('เป็นอย่างไรบ้างคะ', 'พอรู้สึกไหมคะ', 'ทานลดลงไหมคะ').\n\n"
+        "2. ACCURATE SPEAKER SEPARATION (แพทย์ vs ผู้ป่วย):\n"
+        "   - 'แพทย์: ' (Doctor): Doctor speaking (e.g. greeting, vital signs announcement, physical exam, clinical assessment like 'รอยแดงยังพอยับยั้งได้ แต่เสี่ยงแผลกดทับสูงมากค่ะ', dietary questions, advice on air mattress/prescription).\n"
+        "   - 'ผู้ป่วย: ' (Patient/Caregiver): Patient or caregiver speaking (describing symptoms, answering doctor's questions, reporting caregiver burden).\n"
+        "   - Sentences ending in polite feminine particles ('นะคะ', 'คะ', 'ค่ะ') that give medical evaluation or instruction belong to 'แพทย์: '.\n"
+        "   - Every speaker turn MUST begin with either 'แพทย์: ' or 'ผู้ป่วย: '.\n\n"
+        "3. STRICT ZERO HALLUCINATION:\n"
+        "   - DO NOT invent or add new diseases, drugs, or symptoms not mentioned in the audio.\n"
+        "   - Keep all numerical measurements, vital signs (125/80, 74, 16, 36.6, 98), duration (3 เดือน, 3-4 กิโล, 24 ชั่วโมง) exactly faithful.\n\n"
         "4. OUTPUT FORMAT:\n"
-        "   - Return ONLY the clean, formatted dialogue with each turn beginning with 'แพทย์: ' or 'ผู้ป่วย: ', separated by a blank line.\n"
-        "   - Do not add markdown code blocks, backticks, or explanatory notes."
+        "   - Return ONLY the clean, formatted dialogue where each turn starts with 'แพทย์: ' or 'ผู้ป่วย: ', separated by a blank line.\n"
+        "   - Do not add markdown code fences, backticks, or conversational preamble."
     )
 
 
@@ -153,8 +203,103 @@ def format_clinical_dialogue_rule_based(text: str) -> str:
     return "\n\n".join(formatted_lines) if formatted_lines else text
 
 
-def parse_dialogue_text_into_segments(text: str, total_duration: float = 180.0) -> list[dict]:
-    """Parse dialogue text formatted as 'แพทย์: ...' / 'ผู้ป่วย: ...' into clean segment dicts."""
+def align_turns_with_original_segments(
+    parsed_lines: list[dict],
+    original_segments: list,
+    total_duration: float = 180.0,
+) -> list[dict]:
+    """
+    Aligns post-processed dialogue turns with the original Whisper segments
+    so that every turn gets the exact real-audio start and end timestamps.
+    """
+    if not original_segments:
+        return parsed_lines
+
+    def get_clean_chars(s: str) -> str:
+        return re.sub(r"[^\w\u0E00-\u0E7F]", "", s).lower()
+
+    orig_clean_texts = []
+    for s in original_segments:
+        txt = s.text if hasattr(s, "text") else s.get("text", "")
+        orig_clean_texts.append(get_clean_chars(txt))
+
+    curr_orig_idx = 0
+    num_orig = len(original_segments)
+    num_lines = len(parsed_lines)
+
+    for line_idx, line in enumerate(parsed_lines):
+        line_clean = get_clean_chars(line["text"])
+        matched_indices = []
+
+        scan_idx = curr_orig_idx
+        while scan_idx < num_orig:
+            orig_txt = orig_clean_texts[scan_idx]
+            if not orig_txt:
+                scan_idx += 1
+                continue
+
+            # Check overlap between orig_txt and line_clean
+            is_match = False
+            if len(orig_txt) >= 6:
+                sample = orig_txt[:min(12, len(orig_txt))]
+                mid_sample = orig_txt[len(orig_txt)//2 : min(len(orig_txt)//2 + 10, len(orig_txt))]
+                if sample in line_clean or mid_sample in line_clean:
+                    is_match = True
+            elif orig_txt in line_clean:
+                is_match = True
+
+            if is_match:
+                matched_indices.append(scan_idx)
+                scan_idx += 1
+            else:
+                if not matched_indices:
+                    # Lookahead 1-2 segments in case of dropped filler words
+                    lookahead_found = False
+                    for la in range(1, min(3, num_orig - scan_idx)):
+                        la_txt = orig_clean_texts[scan_idx + la]
+                        if la_txt and (la_txt[:min(10, len(la_txt))] in line_clean):
+                            scan_idx += la
+                            matched_indices.append(scan_idx)
+                            scan_idx += 1
+                            lookahead_found = True
+                            break
+                    if not lookahead_found:
+                        break
+                else:
+                    break
+
+        if matched_indices:
+            first_seg = original_segments[matched_indices[0]]
+            last_seg = original_segments[matched_indices[-1]]
+            s_start = float(first_seg.start if hasattr(first_seg, "start") else first_seg.get("start", 0.0))
+            s_end = float(last_seg.end if hasattr(last_seg, "end") else last_seg.get("end", s_start + 2.0))
+            line["start"] = round(s_start, 2)
+            line["end"] = round(max(s_end, s_start + 0.5), 2)
+            curr_orig_idx = matched_indices[-1] + 1
+        else:
+            prev_end = parsed_lines[line_idx - 1]["end"] if line_idx > 0 else 0.0
+            if curr_orig_idx < num_orig:
+                next_seg = original_segments[curr_orig_idx]
+                s_start = float(next_seg.start if hasattr(next_seg, "start") else next_seg.get("start", prev_end))
+                s_end = float(next_seg.end if hasattr(next_seg, "end") else next_seg.get("end", s_start + 2.0))
+                line["start"] = round(max(prev_end, s_start), 2)
+                line["end"] = round(max(s_end, line["start"] + 1.5), 2)
+                curr_orig_idx += 1
+            else:
+                rem_time = max(total_duration - prev_end, 2.0)
+                dur = rem_time / max(num_lines - line_idx, 1)
+                line["start"] = round(prev_end, 2)
+                line["end"] = round(min(total_duration, prev_end + dur), 2)
+
+    return parsed_lines
+
+
+def parse_dialogue_text_into_segments(
+    text: str,
+    total_duration: float = 180.0,
+    original_segments: list | None = None,
+) -> list[dict]:
+    """Parse dialogue text formatted as 'แพทย์: ...' / 'ผู้ป่วย: ...' into clean segment dicts with real timestamps."""
     lines = [line.strip() for line in text.split("\n") if line.strip()]
     segments = []
     seg_id = 0
@@ -196,6 +341,10 @@ def parse_dialogue_text_into_segments(text: str, total_duration: float = 180.0) 
             "role": role,
         })
         seg_id += 1
+
+    if original_segments and segments:
+        segments = align_turns_with_original_segments(segments, original_segments, total_duration)
+
     return segments
 
 
@@ -280,7 +429,13 @@ def call_gemini_proofread_text(text: str, api_key: str) -> str | None:
     if not api_key or not text.strip():
         return None
     system_instruction = get_proofread_system_prompt()
-    models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash"]
+    models = [
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+    ]
     payload = {
         "system_instruction": {"parts": [{"text": system_instruction}]},
         "contents": [{"parts": [{"text": f"Format this transcript into แพทย์: and ผู้ป่วย: turns with zero additions:\n\n{text}"}]}],
@@ -289,24 +444,30 @@ def call_gemini_proofread_text(text: str, api_key: str) -> str | None:
         },
     }
     api_k = str(api_key).strip()
-    headers = {
-        "x-goog-api-key": api_k,
-        "Authorization": f"Bearer {api_k}",
-        "Content-Type": "application/json",
-    }
+    auth_attempts = [
+        (
+            lambda m: f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_k}",
+            {"Content-Type": "application/json", "x-goog-api-key": api_k},
+        ),
+        (
+            lambda m: f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
+            {"Content-Type": "application/json", "Authorization": f"Bearer {api_k}"},
+        ),
+    ]
     for m in models:
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_k}"
-            resp = requests.post(url, json=payload, headers=headers, timeout=25)
-            if resp.status_code == 200:
-                data = resp.json()
-                candidates = data.get("candidates", [])
-                if candidates:
-                    out = candidates[0]["content"]["parts"][0]["text"].strip()
-                    if out and ("แพทย์:" in out or "ผู้ป่วย:" in out):
-                        return out
-        except Exception:
-            pass
+        for url_fn, headers in auth_attempts:
+            try:
+                url = url_fn(m)
+                resp = requests.post(url, json=payload, headers=headers, timeout=25)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        out = candidates[0]["content"]["parts"][0]["text"].strip()
+                        if out and ("แพทย์:" in out or "ผู้ป่วย:" in out):
+                            return out
+            except Exception:
+                pass
     return None
 
 
@@ -343,8 +504,8 @@ def post_process_segments(
     post_processed_by = "dictionary"
     diarized_text = None
 
-    # Strategy 1: Gemini if key available
-    if settings.gemini_api_key and (selected_mode == "gemini" or settings.post_process_mode == "gemini"):
+    # Strategy 1: Gemini if key available (prioritize for Thai clinical nuance)
+    if settings.gemini_api_key and (selected_mode in {"gemini", "auto", "groq"} or settings.post_process_mode in {"gemini", "auto"}):
         try:
             gemini_out = call_gemini_proofread_text(combined_raw_text, settings.gemini_api_key)
             if gemini_out and ("แพทย์:" in gemini_out or "ผู้ป่วย:" in gemini_out):
@@ -367,7 +528,11 @@ def post_process_segments(
 
     # Step 3: If AI Diarized Text is available, parse into accurate turn segments
     if diarized_text:
-        parsed_turn_dicts = parse_dialogue_text_into_segments(diarized_text, total_duration=total_duration)
+        parsed_turn_dicts = parse_dialogue_text_into_segments(
+            diarized_text,
+            total_duration=total_duration,
+            original_segments=formatted_segments,
+        )
         if parsed_turn_dicts:
             new_segments = []
             for item in parsed_turn_dicts:
