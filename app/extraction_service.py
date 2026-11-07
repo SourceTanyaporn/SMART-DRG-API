@@ -160,7 +160,7 @@ def compute_bmi(weight_val: float | int | str | None, height_val: float | int | 
     return None
 
 
-def extract_with_groq(text: str, api_key: str, model: str = "llama-3.3-70b-versatile") -> dict | None:
+def extract_with_groq(text: str, api_key: str, model: str = "openai/gpt-oss-120b") -> dict | None:
     from app.postprocess import get_active_groq_models
 
     active_models = get_active_groq_models(api_key)
@@ -168,7 +168,14 @@ def extract_with_groq(text: str, api_key: str, model: str = "llama-3.3-70b-versa
     if model:
         candidate_models.append(model)
     candidate_models.extend(active_models)
-    candidate_models.extend(["llama3-70b-8192", "llama3-8b-8192", "mixtral-8x7b-32768", "gemma2-9b-it"])
+    candidate_models.extend([
+        "openai/gpt-oss-120b",
+        "qwen/qwen3.8-27b",
+        "openai/gpt-oss-20b",
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "llama3-70b-8192",
+    ])
 
     tried = set()
     client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
@@ -185,7 +192,7 @@ def extract_with_groq(text: str, api_key: str, model: str = "llama-3.3-70b-versa
                     {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
                     {"role": "user", "content": f"บทสนทนาทางการแพทย์:\n\n{text}"},
                 ],
-                timeout=30,
+                timeout=15,
             )
             content = response.choices[0].message.content
             if content:
@@ -202,11 +209,10 @@ def extract_with_groq(text: str, api_key: str, model: str = "llama-3.3-70b-versa
 
 def extract_with_gemini(text: str, api_key: str) -> dict | None:
     models = [
-        "gemini-3.6-flash",
-        "gemini-3.5-flash",
-        "gemini-3.5-flash-lite",
+        "gemini-flash-lite-latest",
+        "gemini-flash-latest",
+        "gemini-3.8-flash",
         "gemini-2.5-flash",
-        "gemini-2.5-pro",
     ]
     payload = {
         "system_instruction": {"parts": [{"text": EXTRACTION_SYSTEM_PROMPT}]},
@@ -217,33 +223,28 @@ def extract_with_gemini(text: str, api_key: str) -> dict | None:
         },
     }
     api_k = str(api_key).strip()
-    auth_attempts = [
-        (
-            lambda m: f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_k}",
-            {"Content-Type": "application/json", "x-goog-api-key": api_k},
-        ),
-        (
-            lambda m: f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
-            {"Content-Type": "application/json", "Authorization": f"Bearer {api_k}"},
-        ),
-    ]
+    headers = {"Content-Type": "application/json", "x-goog-api-key": api_k}
+
     for m in models:
-        for url_fn, headers in auth_attempts:
-            try:
-                url = url_fn(m)
-                resp = requests.post(url, json=payload, headers=headers, timeout=25)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    candidates = data.get("candidates", [])
-                    if candidates:
-                        raw_text = candidates[0]["content"]["parts"][0]["text"].strip()
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_k}"
+            resp = requests.post(url, json=payload, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                candidates = data.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if parts and "text" in parts[0]:
+                        raw_text = parts[0]["text"].strip()
                         raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.IGNORECASE)
                         raw_text = re.sub(r"\s*```$", "", raw_text)
                         res = json.loads(raw_text)
                         if isinstance(res, dict):
                             return res
-            except Exception:
-                pass
+            elif resp.status_code in {429, 503}:
+                print(f"[EXTRACT] Gemini model '{m}' returned {resp.status_code} (rate/busy), trying next...")
+        except Exception as e:
+            print(f"[EXTRACT] Gemini model '{m}' request error: {e}")
     return None
 
 
@@ -1559,33 +1560,42 @@ def extract_medical_form(
                 n = ICD10_DESCRIPTIONS.get(c, "")
                 sec_icd10_list.append({"code": c, "name": n})
 
-    treatment_plan_str = extracted_data.get("note") or extracted_data.get("treatment_plan", "") or ""
+    def to_clean_str(val, default: str = "") -> str:
+        if val is None:
+            return default
+        if isinstance(val, list):
+            return "\n".join(str(x).strip() for x in val if x is not None and str(x).strip())
+        if isinstance(val, dict):
+            return json.dumps(val, ensure_ascii=False)
+        return str(val).strip()
+
+    treatment_plan_str = to_clean_str(extracted_data.get("note") or extracted_data.get("treatment_plan"))
     safety_alerts = detect_drug_safety_alerts(clean_text, patient_allergies=allergies, treatment_plan=treatment_plan_str)
 
     return MedicalFormExtractOut(
-        chiefComplaint=extracted_data.get("chiefComplaint") or extracted_data.get("chief_complaint", "") or "",
-        presentIllness=extracted_data.get("presentIllness") or extracted_data.get("present_illness", "") or "",
-        pastHistory=extracted_data.get("pastHistory") or extracted_data.get("past_history", "") or "",
+        chiefComplaint=to_clean_str(extracted_data.get("chiefComplaint") or extracted_data.get("chief_complaint")),
+        presentIllness=to_clean_str(extracted_data.get("presentIllness") or extracted_data.get("present_illness")),
+        pastHistory=to_clean_str(extracted_data.get("pastHistory") or extracted_data.get("past_history"), default="-"),
         vitalSigns=vital_signs_obj,
-        physicalExam=extracted_data.get("physicalExam") or extracted_data.get("physical_exam", "") or "",
-        provisionalDiagnosis=prov_dx,
-        icd10=icd10_full,
-        icd10Code=icd10_code,
-        icd10Name=icd10_desc,
+        physicalExam=to_clean_str(extracted_data.get("physicalExam") or extracted_data.get("physical_exam")),
+        provisionalDiagnosis=to_clean_str(prov_dx),
+        icd10=to_clean_str(icd10_full),
+        icd10Code=to_clean_str(icd10_code),
+        icd10Name=to_clean_str(icd10_desc),
         secondaryIcd10=sec_icd10_list,
-        icd9=icd9_full,
-        icd9Code=icd9_code,
-        icd9Name=icd9_desc,
-        drg=drg_full,
-        drgCode=drg_code,
-        drgName=drg_desc,
-        investigation=inv_str,
+        icd9=to_clean_str(icd9_full),
+        icd9Code=to_clean_str(icd9_code),
+        icd9Name=to_clean_str(icd9_desc),
+        drg=to_clean_str(drg_full),
+        drgCode=to_clean_str(drg_code),
+        drgName=to_clean_str(drg_desc),
+        investigation=to_clean_str(inv_str),
         investigations=inv_list,
         assessmentForms=resolved_forms,
         assessments=final_assessments,
         safetyAlerts=safety_alerts,
         note=treatment_plan_str,
-        disposition=extracted_data.get("disposition", "") or "",
-        rawText=clean_text,
-        extractedBy=extracted_by,
+        disposition=to_clean_str(extracted_data.get("disposition"), default="OPD Discharge"),
+        rawText=to_clean_str(clean_text),
+        extractedBy=to_clean_str(extracted_by, default="rule_based"),
     )

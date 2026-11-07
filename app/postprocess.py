@@ -399,7 +399,14 @@ def call_groq_proofread_text(text: str, api_key: str, model: str = "llama-3.3-70
     if model:
         candidate_models.append(model)
     candidate_models.extend(active_models)
-    candidate_models.extend(["llama3-8b-8192", "gemma2-9b-it", "llama-3.3-70b-specdec"])
+    candidate_models.extend([
+        "openai/gpt-oss-120b",
+        "qwen/qwen3.8-27b",
+        "openai/gpt-oss-20b",
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "llama3-8b-8192",
+    ])
 
     seen = set()
     models_to_try = [m for m in candidate_models if m and not (m in seen or seen.add(m))]
@@ -430,11 +437,10 @@ def call_gemini_proofread_text(text: str, api_key: str) -> str | None:
         return None
     system_instruction = get_proofread_system_prompt()
     models = [
-        "gemini-3.6-flash",
-        "gemini-3.5-flash",
-        "gemini-3.5-flash-lite",
+        "gemini-flash-lite-latest",
+        "gemini-flash-latest",
+        "gemini-3.8-flash",
         "gemini-2.5-flash",
-        "gemini-2.5-pro",
     ]
     payload = {
         "system_instruction": {"parts": [{"text": system_instruction}]},
@@ -444,30 +450,25 @@ def call_gemini_proofread_text(text: str, api_key: str) -> str | None:
         },
     }
     api_k = str(api_key).strip()
-    auth_attempts = [
-        (
-            lambda m: f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_k}",
-            {"Content-Type": "application/json", "x-goog-api-key": api_k},
-        ),
-        (
-            lambda m: f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
-            {"Content-Type": "application/json", "Authorization": f"Bearer {api_k}"},
-        ),
-    ]
+    headers = {"Content-Type": "application/json", "x-goog-api-key": api_k}
+
     for m in models:
-        for url_fn, headers in auth_attempts:
-            try:
-                url = url_fn(m)
-                resp = requests.post(url, json=payload, headers=headers, timeout=25)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    candidates = data.get("candidates", [])
-                    if candidates:
-                        out = candidates[0]["content"]["parts"][0]["text"].strip()
-                        if out and ("แพทย์:" in out or "ผู้ป่วย:" in out):
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_k}"
+            resp = requests.post(url, json=payload, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                candidates = data.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if parts and "text" in parts[0]:
+                        out = parts[0]["text"].strip()
+                        if out and ("แพทย์:" in out or "ผู้ป่วย:" in out or "หมอ:" in out or "คนไข้:" in out):
                             return out
-            except Exception:
-                pass
+            elif resp.status_code in {429, 503}:
+                print(f"[GEMINI PROOFREAD] Model '{m}' returned {resp.status_code}, trying next...")
+        except Exception:
+            pass
     return None
 
 

@@ -37,7 +37,7 @@ class Settings:
     huggingface_token: str | None = os.getenv("HUGGINGFACE_TOKEN") or None
     groq_api_key: str | None = os.getenv("GROQ_API_KEY") or None
     groq_whisper_model: str = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3")
-    groq_llm_model: str = os.getenv("GROQ_LLM_MODEL", "llama-3.3-70b-versatile")
+    groq_llm_model: str = os.getenv("GROQ_LLM_MODEL", "openai/gpt-oss-120b")
     transcription_provider: str = os.getenv("TRANSCRIPTION_PROVIDER", "groq" if os.getenv("GROQ_API_KEY") else "local")
 
 

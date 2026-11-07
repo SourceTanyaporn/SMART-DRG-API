@@ -96,18 +96,47 @@ def postprocess(payload: PostProcessIn) -> PostProcessOut:
 
 
 @app.post("/v1/extract-form", response_model=MedicalFormExtractOut)
+@app.post("/v1/extract", response_model=MedicalFormExtractOut)
 def extract_form(payload: MedicalFormExtractIn) -> MedicalFormExtractOut:
-    return extract_medical_form(
-        payload.text,
-        provider=payload.provider,
-        allergies=payload.allergies,
-        patient_name=payload.patient_name,
-    )
+    try:
+        return extract_medical_form(
+            payload.text,
+            provider=payload.provider,
+            allergies=payload.allergies,
+            patient_name=payload.patient_name,
+        )
+    except Exception as e:
+        print(f"[EXTRACT ERROR] extract_form fallback triggered due to: {e}")
+        traceback.print_exc()
+        try:
+            return extract_medical_form(
+                payload.text,
+                provider="rule_based",
+                allergies=payload.allergies,
+                patient_name=payload.patient_name,
+            )
+        except Exception as e2:
+            print(f"[EXTRACT CRITICAL] Even rule_based fallback failed: {e2}")
+            return MedicalFormExtractOut(
+                chiefComplaint="",
+                presentIllness="",
+                pastHistory="-",
+                rawText=str(payload.text or ""),
+                extractedBy="error_fallback",
+            )
 
 
 @app.post("/v1/chat/clinical", response_model=ClinicalChatOut)
 def clinical_chat(payload: ClinicalChatIn) -> ClinicalChatOut:
-    return run_clinical_chat(payload)
+    try:
+        return run_clinical_chat(payload)
+    except Exception as e:
+        print(f"[CHAT ERROR] clinical_chat unhandled error: {e}")
+        traceback.print_exc()
+        return ClinicalChatOut(
+            reply="ขออภัยครับ ขณะนี้ระบบ Clinical AI กำลังมีผู้ใช้งานจำนวนมาก กรุณาลองส่งข้อความใหม่อีกครั้งครับ",
+            provider_used="system_error_fallback",
+        )
 
 
 # @app.post("/v1/transcribe", response_model=TranscriptionOut)

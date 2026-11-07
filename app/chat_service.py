@@ -179,12 +179,10 @@ def chat_with_gemini(
     api_key: str,
 ) -> tuple[str, dict | None]:
     models = [
-        "gemini-3.6-flash",
-        "gemini-3.5-flash",
-        "gemini-3.5-flash-lite",
+        "gemini-flash-lite-latest",
+        "gemini-flash-latest",
+        "gemini-3.8-flash",
         "gemini-2.5-flash",
-        "gemini-2.5-pro",
-        "gemini-2.0-flash",
     ]
     system_instruction = CLINICAL_COPILOT_SYSTEM_PROMPT
     if context_str:
@@ -217,41 +215,30 @@ def chat_with_gemini(
     }
 
     api_k = str(api_key).strip()
-
-    auth_attempts = [
-        # Strategy 1: Standard Google AI Studio API key via query parameter & x-goog-api-key header
-        (
-            lambda m: f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_k}",
-            {"Content-Type": "application/json", "x-goog-api-key": api_k},
-        ),
-        # Strategy 2: OAuth2 / Bearer Token
-        (
-            lambda m: f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
-            {"Content-Type": "application/json", "Authorization": f"Bearer {api_k}"},
-        ),
-    ]
+    headers = {"Content-Type": "application/json", "x-goog-api-key": api_k}
 
     last_error_msg = "Gemini API call failed"
     for m in models:
-        for url_fn, headers in auth_attempts:
-            try:
-                url = url_fn(m)
-                resp = requests.post(url, json=payload, headers=headers, timeout=25)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    candidates = data.get("candidates", [])
-                    if candidates:
-                        parts = candidates[0].get("content", {}).get("parts", [])
-                        if parts and "text" in parts[0]:
-                            raw_reply = parts[0]["text"]
-                            clean_text, action = parse_action_block(raw_reply)
-                            return clean_text, action
-                else:
-                    last_error_msg = f"Gemini {m} HTTP {resp.status_code}: {resp.text[:200]}"
-                    print(f"[GEMINI WARNING] {last_error_msg}")
-            except Exception as e:
-                last_error_msg = f"Gemini {m} error: {e}"
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_k}"
+            resp = requests.post(url, json=payload, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                candidates = data.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if parts and "text" in parts[0]:
+                        raw_reply = parts[0]["text"]
+                        clean_text, action = parse_action_block(raw_reply)
+                        return clean_text, action
+            elif resp.status_code in {429, 503}:
+                print(f"[GEMINI] Model '{m}' returned {resp.status_code}, trying next...")
+            else:
+                last_error_msg = f"Gemini {m} HTTP {resp.status_code}: {resp.text[:200]}"
                 print(f"[GEMINI WARNING] {last_error_msg}")
+        except Exception as e:
+            last_error_msg = f"Gemini {m} error: {e}"
+            print(f"[GEMINI WARNING] {last_error_msg}")
 
     raise RuntimeError(last_error_msg)
 
@@ -260,7 +247,7 @@ def chat_with_groq(
     messages: list[dict],
     context_str: str,
     api_key: str,
-    model: str = "llama-3.3-70b-versatile",
+    model: str = "openai/gpt-oss-120b",
 ) -> tuple[str, dict | None]:
     client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
     formatted_messages = [
@@ -279,12 +266,12 @@ def chat_with_groq(
         candidate_models.append(model)
     candidate_models.extend(active_models)
     candidate_models.extend([
+        "openai/gpt-oss-120b",
+        "qwen/qwen3.8-27b",
+        "openai/gpt-oss-20b",
         "llama-3.3-70b-versatile",
         "llama-3.1-8b-instant",
         "llama3-70b-8192",
-        "llama3-8b-8192",
-        "mixtral-8x7b-32768",
-        "gemma2-9b-it",
     ])
 
     tried = set()
@@ -297,7 +284,7 @@ def chat_with_groq(
                 model=m,
                 temperature=0.2,
                 messages=formatted_messages,
-                timeout=25,
+                timeout=15,
             )
             raw_reply = response.choices[0].message.content or ""
             clean_text, action = parse_action_block(raw_reply)
